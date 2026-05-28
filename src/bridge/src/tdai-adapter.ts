@@ -6,18 +6,57 @@
  * providing runtime context, logger, and LLM runner factory.
  */
 
-import type { 
-  HostAdapter, 
-  RuntimeContext, 
-  Logger, 
-  LLMRunnerFactory,
-  LLMRunner,
-  LLMRunParams 
-} from '../../vendor/tencentdb/src/core/types.js';
 import type { BridgeConfig } from './config.js';
 
+// Define types locally to avoid import issues
+// These match the TencentDB Agent Memory interfaces
+
+export interface Logger {
+  debug?: (message: string) => void;
+  info: (message: string) => void;
+  warn: (message: string) => void;
+  error: (message: string) => void;
+}
+
+export interface RuntimeContext {
+  userId: string;
+  sessionId: string;
+  sessionKey: string;
+  platform: string;
+  workspaceDir: string;
+  dataDir: string;
+}
+
+export interface LLMRunParams {
+  prompt: string;
+  systemPrompt?: string;
+  taskId: string;
+  timeoutMs?: number;
+  maxTokens?: number;
+}
+
+export interface LLMRunner {
+  run(params: LLMRunParams): Promise<string>;
+}
+
+export interface LLMRunnerCreateOptions {
+  modelRef?: string;
+  enableTools?: boolean;
+}
+
+export interface LLMRunnerFactory {
+  createRunner(opts?: LLMRunnerCreateOptions): LLMRunner;
+}
+
+export interface HostAdapter {
+  readonly hostType: string;
+  getRuntimeContext(): RuntimeContext;
+  getLogger(): Logger;
+  getLLMRunnerFactory(): LLMRunnerFactory;
+}
+
 export class MemBridgeHostAdapter implements HostAdapter {
-  readonly hostType = 'standalone' as const;
+  readonly hostType = 'standalone';
   
   private config: BridgeConfig;
   private logger: Logger;
@@ -34,10 +73,12 @@ export class MemBridgeHostAdapter implements HostAdapter {
     this.sessionId = opts.sessionId || this.generateSessionId();
     
     this.logger = {
-      debug: opts.config.logLevel === 'debug' ? (msg) => console.debug(`[TDAI] ${msg}`) : undefined,
-      info: (msg) => console.info(`[TDAI] ${msg}`),
-      warn: (msg) => console.warn(`[TDAI] ${msg}`),
-      error: (msg) => console.error(`[TDAI] ${msg}`),
+      debug: opts.config.logLevel === 'debug' 
+        ? (msg: string) => console.debug(`[TDAI] ${msg}`) 
+        : undefined,
+      info: (msg: string) => console.info(`[TDAI] ${msg}`),
+      warn: (msg: string) => console.warn(`[TDAI] ${msg}`),
+      error: (msg: string) => console.error(`[TDAI] ${msg}`),
     };
   }
 
@@ -61,7 +102,7 @@ export class MemBridgeHostAdapter implements HostAdapter {
     const logger = this.logger;
     
     return {
-      createRunner(opts?: { modelRef?: string; enableTools?: boolean }): LLMRunner {
+      createRunner(opts?: LLMRunnerCreateOptions): LLMRunner {
         return {
           async run(params: LLMRunParams): Promise<string> {
             const model = opts?.modelRef || config.llm.model;

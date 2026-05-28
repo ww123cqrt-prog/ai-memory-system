@@ -18,8 +18,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { loadConfig } from './config.js';
 import { MemBridgeHostAdapter } from './tdai-adapter.js';
-import { TdaiCore } from '../../vendor/tencentdb/src/core/tdai-core.js';
-import type { MemoryTdaiConfig } from '../../vendor/tencentdb/src/config.js';
+
+// Import TdaiCore dynamically at runtime
+// This avoids TypeScript import issues with the vendor directory
+let TdaiCore: any;
 
 const config = loadConfig();
 
@@ -27,21 +29,38 @@ const config = loadConfig();
 const adapter = new MemBridgeHostAdapter({ config });
 
 // Default TDAI config (can be overridden via env)
-const tdaiConfig: MemoryTdaiConfig = {
+const tdaiConfig = {
   storeBackend: 'sqlite',
   recall: {
+    enabled: true,
     strategy: 'hybrid',
     maxResults: 5,
     maxCharsPerMemory: 0,
     maxTotalRecallChars: 0,
+    scoreThreshold: 0.3,
+    timeoutMs: 5000,
   },
   extraction: {
     enabled: true,
-    everyNConversations: 5,
     maxMemoriesPerSession: 20,
   },
   persona: {
     triggerEveryN: 50,
+    maxScenes: 20,
+    backupCount: 3,
+    sceneBackupCount: 10,
+  },
+  pipeline: {
+    everyNConversations: 5,
+    enableWarmup: true,
+    l1IdleTimeoutSeconds: 600,
+    l2DelayAfterL1Seconds: 90,
+    l2MinIntervalSeconds: 900,
+    l2MaxIntervalSeconds: 3600,
+    sessionActiveWindowHours: 24,
+  },
+  capture: {
+    l0l1RetentionDays: 0,
   },
   llm: {
     enabled: true,
@@ -52,22 +71,27 @@ const tdaiConfig: MemoryTdaiConfig = {
     timeoutMs: config.llm.timeoutMs,
   },
   embedding: {
+    enabled: true,
     provider: 'openai',
     baseUrl: config.llm.baseUrl,
     apiKey: config.llm.apiKey,
     model: 'text-embedding-3-small',
     dimensions: 1536,
+    sendDimensions: true,
+    conflictRecallTopK: 5,
+    maxInputChars: 5000,
+    timeoutMs: 10000,
   },
   bm25: {
     language: 'zh',
   },
+  memoryCleanup: {},
+  report: {},
+  offload: {},
 };
 
-// Initialize TdaiCore
-const core = new TdaiCore({
-  hostAdapter: adapter,
-  config: tdaiConfig,
-});
+// TdaiCore instance (initialized lazily)
+let core: any = null;
 
 // Memory store for tracking entities (in-memory, can be persisted later)
 const entities = new Map<string, { type: string; id: string; created: number }>();
@@ -77,7 +101,25 @@ let initPromise: Promise<void> | null = null;
 
 async function ensureInitialized(): Promise<void> {
   if (!initPromise) {
-    initPromise = core.initialize();
+    initPromise = (async () => {
+      try {
+        // Dynamic import to avoid TypeScript issues
+        const tencentdbPath = '../../../vendor/tencentdb/src/core/tdai-core.js';
+        const tencentdb = await import(tencentdbPath);
+        TdaiCore = tencentdb.TdaiCore;
+        
+        core = new TdaiCore({
+          hostAdapter: adapter,
+          config: tdaiConfig,
+        });
+        
+        await core.initialize();
+        console.error('[Bridge] TdaiCore initialized');
+      } catch (err) {
+        console.error('[Bridge] Failed to initialize TdaiCore:', err);
+        throw err;
+      }
+    })();
   }
   await initPromise;
 }
@@ -146,8 +188,6 @@ server.tool(
   },
   async ({ query, user_id, agent_id, limit, filters }) => {
     await ensureInitialized();
-    
-    const sessionKey = `${user_id || 'default'}:${agent_id || 'default'}`;
     
     // Call TdaiCore.searchMemories()
     const result = await core.searchMemories({
@@ -354,13 +394,17 @@ async function main() {
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.error('[Bridge] Shutting down...');
-  await core.destroy();
+  if (core) {
+    await core.destroy();
+  }
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
   console.error('[Bridge] Shutting down...');
-  await core.destroy();
+  if (core) {
+    await core.destroy();
+  }
   process.exit(0);
 });
 
