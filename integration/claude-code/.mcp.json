@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "memory-bridge": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${extensionPath}/../src/bridge/dist/mcp-server.js"],
+      "env": {
+        "LLM_API_KEY": "${userConfig.llm_api_key}",
+        "LLM_BASE_URL": "${userConfig.llm_base_url}",
+        "LLM_MODEL": "${userConfig.llm_model}",
+        "MEMORY_DATA_DIR": "~/.memory-tdai"
+      }
+    }
+  }
+}

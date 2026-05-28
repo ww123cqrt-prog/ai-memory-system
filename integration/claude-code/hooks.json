@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "memory-bridge-ensure-deps",
+            "type": "command",
+            "command": "cd ${extensionPath}/../src/bridge && npm install --production 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "name": "memory-bridge-search",
+            "type": "command",
+            "command": "echo '{\"tool\": \"search_memories\", \"query\": \"${userInput}\"}'",
+            "timeout": 8
+          }
+        ]
+      }
+    ]
+  }
+}

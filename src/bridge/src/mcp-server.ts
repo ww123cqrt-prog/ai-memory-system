@@ -18,27 +18,69 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { loadConfig } from './config.js';
 import { MemBridgeHostAdapter } from './tdai-adapter.js';
-
-// Import TdaiCore from TencentDB subtree
-// Note: This requires building TencentDB first, or using tsx for direct import
-// import { TdaiCore } from '../../vendor/tencentdb/src/core/tdai-core.js';
+import { TdaiCore } from '../../vendor/tencentdb/src/core/tdai-core.js';
+import type { MemoryTdaiConfig } from '../../vendor/tencentdb/src/config.js';
 
 const config = loadConfig();
+
+// Create host adapter
 const adapter = new MemBridgeHostAdapter({ config });
 
-// For now, we'll create a mock TdaiCore interface
-// In production, this would be the actual TdaiCore instance
-interface TdaiCoreMock {
-  handleBeforeRecall(userText: string, sessionKey: string): Promise<any>;
-  handleTurnCompleted(turn: any): Promise<any>;
-  searchMemories(params: any): Promise<any>;
-  searchConversations(params: any): Promise<any>;
-  handleSessionEnd(sessionKey: string): Promise<void>;
-}
+// Default TDAI config (can be overridden via env)
+const tdaiConfig: MemoryTdaiConfig = {
+  storeBackend: 'sqlite',
+  recall: {
+    strategy: 'hybrid',
+    maxResults: 5,
+    maxCharsPerMemory: 0,
+    maxTotalRecallChars: 0,
+  },
+  extraction: {
+    enabled: true,
+    everyNConversations: 5,
+    maxMemoriesPerSession: 20,
+  },
+  persona: {
+    triggerEveryN: 50,
+  },
+  llm: {
+    enabled: true,
+    baseUrl: config.llm.baseUrl,
+    apiKey: config.llm.apiKey,
+    model: config.llm.model,
+    maxTokens: config.llm.maxTokens,
+    timeoutMs: config.llm.timeoutMs,
+  },
+  embedding: {
+    provider: 'openai',
+    baseUrl: config.llm.baseUrl,
+    apiKey: config.llm.apiKey,
+    model: 'text-embedding-3-small',
+    dimensions: 1536,
+  },
+  bm25: {
+    language: 'zh',
+  },
+};
 
-// This would be initialized with actual TdaiCore
-// const core = new TdaiCore({ hostAdapter: adapter, config: { ... } });
-// await core.initialize();
+// Initialize TdaiCore
+const core = new TdaiCore({
+  hostAdapter: adapter,
+  config: tdaiConfig,
+});
+
+// Memory store for tracking entities (in-memory, can be persisted later)
+const entities = new Map<string, { type: string; id: string; created: number }>();
+
+// Initialize core
+let initPromise: Promise<void> | null = null;
+
+async function ensureInitialized(): Promise<void> {
+  if (!initPromise) {
+    initPromise = core.initialize();
+  }
+  await initPromise;
+}
 
 const server = new McpServer({
   name: 'memory-bridge',
@@ -56,14 +98,37 @@ server.tool(
     metadata: z.record(z.any()).optional().describe('Additional metadata'),
   },
   async ({ text, user_id, agent_id, metadata }) => {
-    // Bridge to TdaiCore.handleTurnCompleted()
+    await ensureInitialized();
+    
     const sessionKey = `${user_id || 'default'}:${agent_id || 'default'}`;
     
-    // TODO: Call core.handleTurnCompleted({ userText: text, ... })
-    console.error(`[Bridge] add_memory: ${text.slice(0, 50)}...`);
+    // Call TdaiCore.handleTurnCommitted()
+    const result = await core.handleTurnCommitted({
+      userText: text,
+      assistantText: '',
+      messages: [{ role: 'user', content: text }],
+      sessionKey,
+      sessionId: metadata?.session_id,
+    });
+    
+    // Track entity
+    const entityId = user_id || agent_id || 'default';
+    entities.set(entityId, {
+      type: user_id ? 'user' : 'agent',
+      id: entityId,
+      created: Date.now(),
+    });
     
     return {
-      content: [{ type: 'text', text: JSON.stringify({ success: true, id: `mem_${Date.now()}` }) }],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          id: `mem_${Date.now()}`,
+          l0_recorded: result.l0RecordedCount,
+          scheduler_notified: result.schedulerNotified,
+        }),
+      }],
     };
   }
 );
@@ -80,14 +145,27 @@ server.tool(
     filters: z.record(z.any()).optional(),
   },
   async ({ query, user_id, agent_id, limit, filters }) => {
-    // Bridge to TdaiCore.searchMemories()
+    await ensureInitialized();
+    
     const sessionKey = `${user_id || 'default'}:${agent_id || 'default'}`;
     
-    // TODO: Call core.searchMemories({ query, limit, ... })
-    console.error(`[Bridge] search_memories: "${query}"`);
+    // Call TdaiCore.searchMemories()
+    const result = await core.searchMemories({
+      query,
+      limit,
+      type: filters?.type,
+      scene: filters?.scene,
+    });
     
     return {
-      content: [{ type: 'text', text: JSON.stringify({ results: [], total: 0 }) }],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          results: result.text,
+          total: result.total,
+          strategy: result.strategy,
+        }),
+      }],
     };
   }
 );
@@ -103,11 +181,24 @@ server.tool(
     page_size: z.number().optional().default(20),
   },
   async ({ user_id, agent_id, page, page_size }) => {
-    // Bridge to TdaiCore.searchConversations()
-    console.error(`[Bridge] get_memories: page ${page}`);
+    await ensureInitialized();
+    
+    // For now, use searchConversations with empty query
+    const result = await core.searchConversations({
+      query: '',
+      limit: page_size,
+    });
     
     return {
-      content: [{ type: 'text', text: JSON.stringify({ memories: [], total: 0 }) }],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          memories: result.text,
+          total: result.total,
+          page,
+          page_size,
+        }),
+      }],
     };
   }
 );
@@ -120,10 +211,18 @@ server.tool(
     memory_id: z.string().describe('Memory ID to retrieve'),
   },
   async ({ memory_id }) => {
-    console.error(`[Bridge] get_memory: ${memory_id}`);
-    
+    // Note: TdaiCore doesn't have a direct getMemory method
+    // This would need to be implemented via vector store lookup
     return {
-      content: [{ type: 'text', text: JSON.stringify({ id: memory_id, text: '', metadata: {} }) }],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          id: memory_id,
+          text: '',
+          metadata: {},
+          note: 'Direct ID lookup not yet implemented in bridge',
+        }),
+      }],
     };
   }
 );
@@ -138,10 +237,16 @@ server.tool(
     metadata: z.record(z.any()).optional(),
   },
   async ({ memory_id, text, metadata }) => {
-    console.error(`[Bridge] update_memory: ${memory_id}`);
-    
+    // Note: TdaiCore doesn't have a direct updateMemory method
+    // This would need to be implemented via vector store update
     return {
-      content: [{ type: 'text', text: JSON.stringify({ success: true }) }],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          note: 'Direct update not yet implemented in bridge',
+        }),
+      }],
     };
   }
 );
@@ -154,10 +259,16 @@ server.tool(
     memory_id: z.string().describe('Memory ID to delete'),
   },
   async ({ memory_id }) => {
-    console.error(`[Bridge] delete_memory: ${memory_id}`);
-    
+    // Note: TdaiCore doesn't have a direct deleteMemory method
+    // This would need to be implemented via vector store delete
     return {
-      content: [{ type: 'text', text: JSON.stringify({ success: true }) }],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          note: 'Direct delete not yet implemented in bridge',
+        }),
+      }],
     };
   }
 );
@@ -171,10 +282,16 @@ server.tool(
     agent_id: z.string().optional(),
   },
   async ({ user_id, agent_id }) => {
-    console.error(`[Bridge] delete_all_memories`);
-    
+    // Note: TdaiCore doesn't have a direct deleteAllMemories method
     return {
-      content: [{ type: 'text', text: JSON.stringify({ success: true, deleted: 0 }) }],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          deleted: 0,
+          note: 'Bulk delete not yet implemented in bridge',
+        }),
+      }],
     };
   }
 );
@@ -188,10 +305,13 @@ server.tool(
     entity_id: z.string().describe('Entity ID to delete'),
   },
   async ({ entity_type, entity_id }) => {
-    console.error(`[Bridge] delete_entities: ${entity_type}/${entity_id}`);
+    entities.delete(entity_id);
     
     return {
-      content: [{ type: 'text', text: JSON.stringify({ success: true }) }],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ success: true }),
+      }],
     };
   }
 );
@@ -204,10 +324,22 @@ server.tool(
     entity_type: z.enum(['user', 'agent', 'app', 'run']).optional(),
   },
   async ({ entity_type }) => {
-    console.error(`[Bridge] list_entities: ${entity_type || 'all'}`);
+    const list = Array.from(entities.values());
+    const filtered = entity_type
+      ? list.filter(e => e.type === entity_type)
+      : list;
     
     return {
-      content: [{ type: 'text', text: JSON.stringify({ entities: [] }) }],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          entities: filtered.map(e => ({
+            type: e.type,
+            id: e.id,
+            created: new Date(e.created).toISOString(),
+          })),
+        }),
+      }],
     };
   }
 );
@@ -218,5 +350,18 @@ async function main() {
   await server.connect(transport);
   console.error('[Bridge] MCP server started');
 }
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.error('[Bridge] Shutting down...');
+  await core.destroy();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.error('[Bridge] Shutting down...');
+  await core.destroy();
+  process.exit(0);
+});
 
 main().catch(console.error);

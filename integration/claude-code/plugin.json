@@ -1,0 +1,31 @@
+{
+  "name": "memory-bridge",
+  "version": "0.1.0",
+  "description": "Memory bridge combining mem0 integration with TencentDB Agent Memory L0-L3 pipeline",
+  "author": {
+    "name": "Custom"
+  },
+  "license": "MIT",
+  "keywords": ["memory", "personalization", "mcp", "l0-l3", "tencentdb", "mem0"],
+  "userConfig": {
+    "llm_api_key": {
+      "type": "string",
+      "title": "LLM API Key",
+      "description": "API key for LLM (used by TencentDB's L0-L3 extraction pipeline)",
+      "sensitive": true,
+      "required": true
+    },
+    "llm_base_url": {
+      "type": "string",
+      "title": "LLM Base URL",
+      "description": "Base URL for LLM API (default: https://api.openai.com/v1)",
+      "default": "https://api.openai.com/v1"
+    },
+    "llm_model": {
+      "type": "string",
+      "title": "LLM Model",
+      "description": "Model name for LLM (default: gpt-4o-mini)",
+      "default": "gpt-4o-mini"
+    }
+  }
+}

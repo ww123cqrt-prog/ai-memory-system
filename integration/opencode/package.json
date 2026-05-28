@@ -1,0 +1,49 @@
+{
+  "name": "memory-bridge-opencode",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Memory bridge plugin for OpenCode — L0-L3 layered memory with mem0 integration",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "license": "MIT",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "memory",
+    "mcp",
+    "l0-l3",
+    "tencentdb",
+    "mem0"
+  ],
+  "files": [
+    "dist",
+    "opencode.json"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "type-check": "tsc --noEmit"
+  },
+  "opencode": {
+    "type": "plugin",
+    "hooks": [
+      "chat.message",
+      "tool.execute.before",
+      "tool.execute.after",
+      "experimental.chat.messages.transform",
+      "experimental.session.compacting"
+    ]
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}
