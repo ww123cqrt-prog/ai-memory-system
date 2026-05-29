@@ -22,6 +22,21 @@
 │  ├── tdai-adapter.ts     # HostAdapter 实现                         │
 │  └── config.ts           # 配置                                     │
 ├─────────────────────────────────────────────────────────────────────┤
+│  调度器 (src/scheduler/)                                            │
+│  ├── scheduler.ts        # CronScheduler 核心                       │
+│  ├── types.ts            # 类型定义                                  │
+│  └── config.ts           # 配置加载                                  │
+├─────────────────────────────────────────────────────────────────────┤
+│  对话来源 (src/sources/)                                            │
+│  ├── opencode-source.ts  # OpenCode SDK 适配器                       │
+│  ├── claude-source.ts    # 【占位】Claude Code 适配器                 │
+│  └── codex-source.ts     # 【占位】Codex 适配器                      │
+├─────────────────────────────────────────────────────────────────────┤
+│  定时任务 (tasks/)                                                  │
+│  ├── daily-summary.ts    # 每日工作总结                              │
+│  ├── project-checker.ts  # 【占位】相关项目检查                       │
+│  └── llm-client.ts       # LLM 调用封装                             │
+├─────────────────────────────────────────────────────────────────────┤
 │  TencentDB Agent Memory (vendor/tencentdb/)                         │
 │  ├── TdaiCore            # 核心门面                                  │
 │  ├── L0-L3 管道          # 分层记忆提取                              │
@@ -38,26 +53,39 @@
 ### 1. 安装依赖
 
 ```bash
-# 安装桥接层依赖
-cd src/bridge && npm install
+# 安装所有依赖
+npm install
 
-# 构建
+# 或者分别安装
+cd src/bridge && npm install
+cd src/scheduler && npm install
+```
+
+### 2. 构建
+
+```bash
 npm run build
 ```
 
-### 2. 配置环境变量
+### 3. 配置环境变量
 
 ```bash
 export LLM_API_KEY="your-api-key"
-export LLM_BASE_URL="https://api.openai.com/v1"
-export LLM_MODEL="gpt-4o-mini"
+export LLM_BASE_URL="https://token-plan-sgp.xiaomimimo.com/v1"
+export LLM_MODEL="mimo-v2.5-pro"
 export MEMORY_DATA_DIR="~/.memory-tdai"
 ```
 
-### 3. 测试 MCP Server
+### 4. 启动 MCP Server
 
 ```bash
-cd src/bridge && npm run dev
+npm run start:bridge
+```
+
+### 5. 启动调度器
+
+```bash
+npm run start:scheduler
 ```
 
 ## Agent 集成
@@ -76,13 +104,118 @@ cd src/bridge && npm run dev
 
 ## 配置
 
+### 环境变量
+
 | 环境变量 | 说明 | 默认值 |
 |---------|------|--------|
 | `LLM_API_KEY` | LLM API Key | - |
-| `LLM_BASE_URL` | LLM 接口地址 | `https://api.openai.com/v1` |
-| `LLM_MODEL` | 模型名称 | `gpt-4o-mini` |
+| `LLM_BASE_URL` | LLM 接口地址 | `https://token-plan-sgp.xiaomimimo.com/v1` |
+| `LLM_MODEL` | 模型名称 | `mimo-v2.5-pro` |
 | `MEMORY_DATA_DIR` | 记忆数据目录 | `~/.memory-tdai` |
 | `LOG_LEVEL` | 日志级别 | `info` |
+| `SCHEDULER_CONFIG` | 调度器配置文件路径 | `./config/scheduler.json` |
+
+### 调度器配置
+
+配置文件：`config/scheduler.json`
+
+```json
+{
+  "enabled": true,
+  "timezone": "Asia/Shanghai",
+  "logLevel": "info",
+  "tasks": {
+    "daily-summary": {
+      "cron": "0 22 * * *",
+      "enabled": true,
+      "description": "每日工作总结 - 整理今天干了什么",
+      "retryOnFail": true,
+      "maxRetries": 3
+    },
+    "project-checker": {
+      "cron": "0 22 * * 5",
+      "enabled": false,
+      "description": "每周五检查相关项目（暂未实现）",
+      "retryOnFail": false,
+      "maxRetries": 0
+    }
+  }
+}
+```
+
+## 目录结构
+
+```
+ai-memory-system/
+├── vendor/                    # 上游代码（Git Subtree）
+│   ├── mem0/                  # mem0 完整代码 (用于参考)
+│   └── tencentdb/             # TencentDB Agent Memory (核心记忆层)
+│
+├── src/
+│   ├── bridge/                # 桥接层
+│   │   ├── src/
+│   │   │   ├── mcp-server.ts  # 9 个 MCP 工具实现
+│   │   │   ├── tdai-adapter.ts # HostAdapter 实现
+│   │   │   └── config.ts      # 配置
+│   │   ├── package.json
+│   │   └── tsconfig.json
+│   │
+│   ├── scheduler/             # 调度器模块
+│   │   ├── src/
+│   │   │   ├── scheduler.ts   # CronScheduler 核心
+│   │   │   ├── types.ts       # 类型定义
+│   │   │   ├── config.ts      # 配置加载
+│   │   │   └── index.ts       # 导出
+│   │   ├── package.json
+│   │   └── tsconfig.json
+│   │
+│   └── sources/               # 对话来源适配器
+│       ├── types.ts           # 统一接口
+│       ├── opencode-source.ts # OpenCode SDK 适配器
+│       ├── claude-source.ts   # 【占位】Claude Code 适配器
+│       ├── codex-source.ts    # 【占位】Codex 适配器
+│       └── index.ts           # 导出
+│
+├── tasks/                     # 定时任务
+│   ├── daily-summary.ts       # 每日工作总结
+│   ├── project-checker.ts     # 【占位】相关项目检查
+│   └── llm-client.ts          # LLM 调用封装
+│
+├── scripts/                   # 启动脚本
+│   └── start-scheduler.ts     # 调度器入口
+│
+├── config/                    # 配置文件
+│   └── scheduler.json         # 调度器配置
+│
+├── integration/               # Agent 集成配置
+│   ├── claude-code/
+│   └── opencode/
+│
+├── package.json               # 根 package.json
+├── plan.md                    # 规划文档
+└── README.md                  # 本文档
+```
+
+## 已完成
+
+- [x] 实现 TdaiCore 初始化和调用
+- [x] 实现记忆数据格式转换 (通过 TdaiCore 统一处理)
+- [x] 配置 Claude Code 集成
+- [x] 配置 OpenCode 集成
+- [x] 实现通用 Cron 调度器
+- [x] 实现 OpenCode 对话来源适配器
+- [x] 实现每日工作总结任务
+- [x] 实现 LLM 调用封装
+
+## 待完成
+
+- [ ] 实现 Claude Code 对话来源适配器
+- [ ] 实现 Codex 对话来源适配器
+- [ ] 实现相关项目检查任务
+- [ ] 添加测试
+- [ ] 实现 get_memory / update_memory / delete_memory (需要访问 vector store)
+- [ ] 部署脚本
+- [ ] 优化 LLM 配置 (支持更多 provider)
 
 ## 更新上游
 
@@ -93,48 +226,6 @@ git subtree pull --prefix=vendor/mem0 https://github.com/mem0ai/mem0.git main --
 # 更新 TencentDB Agent Memory
 git subtree pull --prefix=vendor/tencentdb https://github.com/Tencent/TencentDB-Agent-Memory.git main --squash
 ```
-
-## 目录结构
-
-```
-ai-memory-system/
-├── vendor/
-│   ├── mem0/              # mem0 完整代码 (subtree，用于参考)
-│   └── tencentdb/         # TencentDB Agent Memory (subtree，核心记忆层)
-├── src/
-│   └── bridge/            # 桥接代码 (你的核心代码)
-│       ├── src/
-│       │   ├── mcp-server.ts       # 9 个 MCP 工具实现
-│       │   ├── tdai-adapter.ts     # HostAdapter 实现
-│       │   └── config.ts           # 配置
-│       ├── package.json
-│       └── tsconfig.json
-├── integration/           # Agent 集成配置
-│   ├── claude-code/       # Claude Code 插件配置
-│   │   ├── plugin.json
-│   │   ├── .mcp.json
-│   │   └── hooks.json
-│   └── opencode/          # OpenCode 插件配置
-│       ├── opencode.json
-│       ├── package.json
-│       ├── index.ts
-│       └── tsconfig.json
-└── README.md
-```
-
-## 已完成
-
-- [x] 实现 TdaiCore 初始化和调用
-- [x] 实现记忆数据格式转换 (通过 TdaiCore 统一处理)
-- [x] 配置 Claude Code 集成
-- [x] 配置 OpenCode 集成
-
-## 待完成
-
-- [ ] 添加测试
-- [ ] 实现 get_memory / update_memory / delete_memory (需要访问 vector store)
-- [ ] 部署脚本
-- [ ] 优化 LLM 配置 (支持更多 provider)
 
 ## License
 

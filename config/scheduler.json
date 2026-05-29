@@ -1,0 +1,21 @@
+{
+  "enabled": true,
+  "timezone": "Asia/Shanghai",
+  "logLevel": "info",
+  "tasks": {
+    "daily-summary": {
+      "cron": "0 22 * * *",
+      "enabled": true,
+      "description": "每日工作总结 - 整理今天干了什么",
+      "retryOnFail": true,
+      "maxRetries": 3
+    },
+    "project-checker": {
+      "cron": "0 22 * * 5",
+      "enabled": false,
+      "description": "每周五检查相关项目（暂未实现）",
+      "retryOnFail": false,
+      "maxRetries": 0
+    }
+  }
+}

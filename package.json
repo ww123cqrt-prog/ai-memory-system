@@ -1,0 +1,32 @@
+{
+  "name": "ai-memory-system",
+  "version": "0.1.0",
+  "description": "Hybrid AI memory system combining mem0 and TencentDB Agent Memory",
+  "type": "module",
+  "scripts": {
+    "build:bridge": "cd src/bridge && npm run build",
+    "build:scheduler": "cd src/scheduler && npm run build",
+    "build": "npm run build:bridge && npm run build:scheduler",
+    "start:bridge": "cd src/bridge && npm start",
+    "start:scheduler": "node_modules/.bin/tsx scripts/start-scheduler.ts",
+    "dev:bridge": "cd src/bridge && npm run dev",
+    "dev:scheduler": "cd src/scheduler && npm run dev"
+  },
+  "workspaces": [
+    "src/bridge",
+    "src/scheduler"
+  ],
+  "keywords": [
+    "ai",
+    "memory",
+    "mcp",
+    "opencode",
+    "claude",
+    "codex"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "typescript": "^6.0.3"
+  }
+}

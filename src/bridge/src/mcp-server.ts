@@ -251,16 +251,51 @@ server.tool(
     memory_id: z.string().describe('Memory ID to retrieve'),
   },
   async ({ memory_id }) => {
-    // Note: TdaiCore doesn't have a direct getMemory method
-    // This would need to be implemented via vector store lookup
+    await ensureInitialized();
+
+    const store = core.getVectorStore();
+    if (!store) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: 'Vector store not available',
+          }),
+        }],
+      };
+    }
+
+    const records = await store.queryL1Records();
+    const record = records.find((r: any) => r.record_id === memory_id);
+
+    if (!record) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: `Memory not found: ${memory_id}`,
+          }),
+        }],
+      };
+    }
+
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
-          id: memory_id,
-          text: '',
-          metadata: {},
-          note: 'Direct ID lookup not yet implemented in bridge',
+          success: true,
+          id: record.record_id,
+          content: record.content,
+          type: record.type,
+          priority: record.priority,
+          scene_name: record.scene_name,
+          session_key: record.session_key,
+          session_id: record.session_id,
+          created_at: record.created_time,
+          updated_at: record.updated_time,
+          metadata: record.metadata_json ? JSON.parse(record.metadata_json) : {},
         }),
       }],
     };
@@ -277,14 +312,71 @@ server.tool(
     metadata: z.record(z.any()).optional(),
   },
   async ({ memory_id, text, metadata }) => {
-    // Note: TdaiCore doesn't have a direct updateMemory method
-    // This would need to be implemented via vector store update
+    await ensureInitialized();
+
+    const store = core.getVectorStore();
+    if (!store) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: 'Vector store not available',
+          }),
+        }],
+      };
+    }
+
+    const records = await store.queryL1Records();
+    const existing = records.find((r: any) => r.record_id === memory_id);
+
+    if (!existing) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: `Memory not found: ${memory_id}`,
+          }),
+        }],
+      };
+    }
+
+    const now = new Date().toISOString();
+    const updatedRecord = {
+      id: existing.record_id,
+      content: text,
+      type: existing.type,
+      priority: existing.priority,
+      scene_name: existing.scene_name,
+      source_message_ids: [],
+      metadata: existing.metadata_json ? JSON.parse(existing.metadata_json) : {},
+      timestamps: [existing.timestamp_start, existing.timestamp_end].filter(Boolean),
+      createdAt: existing.created_time,
+      updatedAt: now,
+      sessionKey: existing.session_key,
+      sessionId: existing.session_id,
+    };
+
+    let embedding: Float32Array | undefined;
+    const embeddingService = core.getEmbeddingService();
+    if (embeddingService) {
+      try {
+        embedding = await embeddingService.embed(text);
+      } catch (err) {
+        console.error('[Bridge] Embedding failed, updating without vector:', err);
+      }
+    }
+
+    const success = await store.upsertL1(updatedRecord, embedding);
+
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
-          success: true,
-          note: 'Direct update not yet implemented in bridge',
+          success,
+          id: memory_id,
+          updated_at: now,
         }),
       }],
     };
@@ -299,14 +391,29 @@ server.tool(
     memory_id: z.string().describe('Memory ID to delete'),
   },
   async ({ memory_id }) => {
-    // Note: TdaiCore doesn't have a direct deleteMemory method
-    // This would need to be implemented via vector store delete
+    await ensureInitialized();
+
+    const store = core.getVectorStore();
+    if (!store) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: 'Vector store not available',
+          }),
+        }],
+      };
+    }
+
+    const success = await store.deleteL1(memory_id);
+
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
-          success: true,
-          note: 'Direct delete not yet implemented in bridge',
+          success,
+          id: memory_id,
         }),
       }],
     };

@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Memory System Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <span class="header-icon">🧠</span>
+      <h1>AI Memory System</h1>
+      <span class="header-badge">Dashboard</span>
+    </div>
+    <div class="header-right">
+      <span class="status-indicator" id="system-status-dot"></span>
+      <span class="status-text" id="system-status-text">Connecting...</span>
+      <button class="btn btn-icon" id="btn-refresh" title="Refresh all data">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 1 1 .908-.418A6 6 0 1 1 8 2v1z"/>
+          <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="main">
+    <!-- Left Column: Memories -->
+    <section class="panel panel-memories">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span class="panel-icon">💾</span>
+          <h2>Memories</h2>
+          <span class="badge" id="memory-count">0</span>
+        </div>
+        <div class="panel-actions">
+          <div class="search-box">
+            <svg class="search-icon" width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/>
+            </svg>
+            <input type="text" id="memory-search" placeholder="Search memories..." autocomplete="off">
+          </div>
+          <div class="tab-group">
+            <button class="tab active" data-layer="l0">Raw (L0)</button>
+            <button class="tab" data-layer="l1">Processed (L1)</button>
+          </div>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="loading-state" id="memories-loading">
+          <div class="spinner"></div>
+          <span>Loading memories...</span>
+        </div>
+        <div class="empty-state hidden" id="memories-empty">
+          <span class="empty-icon">📭</span>
+          <span>No memories found</span>
+        </div>
+        <div class="error-state hidden" id="memories-error">
+          <span class="error-icon">⚠️</span>
+          <span id="memories-error-text">Failed to load memories</span>
+        </div>
+        <div class="memory-list hidden" id="memory-list"></div>
+      </div>
+      <div class="panel-footer">
+        <button class="btn btn-sm" id="btn-prev-page" disabled>Previous</button>
+        <span class="page-info" id="page-info">Page 1</span>
+        <button class="btn btn-sm" id="btn-next-page">Next</button>
+      </div>
+    </section>
+
+    <!-- Right Column: Scheduler + Summary + Status -->
+    <div class="right-column">
+      <!-- Scheduler Panel -->
+      <section class="panel panel-scheduler">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="panel-icon">⏰</span>
+            <h2>Scheduler</h2>
+            <span class="badge" id="scheduler-status-badge">--</span>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="loading-state" id="scheduler-loading">
+            <div class="spinner"></div>
+            <span>Loading tasks...</span>
+          </div>
+          <div class="error-state hidden" id="scheduler-error">
+            <span class="error-icon">⚠️</span>
+            <span id="scheduler-error-text">Failed to load scheduler</span>
+          </div>
+          <div class="task-list hidden" id="task-list"></div>
+        </div>
+      </section>
+
+      <!-- Daily Summary Panel -->
+      <section class="panel panel-summary">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="panel-icon">📋</span>
+            <h2>Daily Summary</h2>
+          </div>
+          <button class="btn btn-sm" id="btn-today-summary">Today</button>
+        </div>
+        <div class="panel-body">
+          <div class="loading-state" id="summary-loading">
+            <div class="spinner"></div>
+            <span>Loading summary...</span>
+          </div>
+          <div class="empty-state hidden" id="summary-empty">
+            <span class="empty-icon">📝</span>
+            <span>No summary for today yet</span>
+          </div>
+          <div class="error-state hidden" id="summary-error">
+            <span class="error-icon">⚠️</span>
+            <span id="summary-error-text">Failed to load summary</span>
+          </div>
+          <div class="summary-content hidden" id="summary-content"></div>
+          <div class="summary-history hidden" id="summary-history">
+            <h3 class="sub-heading">Recent Summaries</h3>
+            <div class="history-list" id="history-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- System Status Panel -->
+      <section class="panel panel-status">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="panel-icon">📊</span>
+            <h2>System Status</h2>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="loading-state" id="status-loading">
+            <div class="spinner"></div>
+            <span>Checking system...</span>
+          </div>
+          <div class="error-state hidden" id="status-error">
+            <span class="error-icon">⚠️</span>
+            <span id="status-error-text">Failed to load status</span>
+          </div>
+          <div class="status-grid hidden" id="status-grid">
+            <!-- Database Status -->
+            <div class="status-card">
+              <div class="status-card-header">
+                <span class="status-card-icon">🗄️</span>
+                <span class="status-card-title">Database</span>
+              </div>
+              <div class="status-card-body">
+                <div class="status-row">
+                  <span class="status-label">Size</span>
+                  <span class="status-value" id="db-size">--</span>
+                </div>
+                <div class="status-row">
+                  <span class="status-label">L0 Records</span>
+                  <span class="status-value" id="db-l0-count">--</span>
+                </div>
+                <div class="status-row">
+                  <span class="status-label">L1 Records</span>
+                  <span class="status-value" id="db-l1-count">--</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- LLM Status -->
+            <div class="status-card">
+              <div class="status-card-header">
+                <span class="status-card-icon">🤖</span>
+                <span class="status-card-title">LLM</span>
+                <span class="status-dot" id="llm-status-dot"></span>
+              </div>
+              <div class="status-card-body">
+                <div class="status-row">
+                  <span class="status-label">Status</span>
+                  <span class="status-value" id="llm-status">--</span>
+                </div>
+                <div class="status-row">
+                  <span class="status-label">Model</span>
+                  <span class="status-value" id="llm-model">--</span>
+                </div>
+                <div class="status-row">
+                  <span class="status-label">API Key</span>
+                  <span class="status-value" id="llm-apikey">--</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Embedding Status -->
+            <div class="status-card">
+              <div class="status-card-header">
+                <span class="status-card-icon">📐</span>
+                <span class="status-card-title">Embedding</span>
+                <span class="status-dot" id="embedding-status-dot"></span>
+              </div>
+              <div class="status-card-body">
+                <div class="status-row">
+                  <span class="status-label">Status</span>
+                  <span class="status-value" id="embedding-status">--</span>
+                </div>
+                <div class="status-row">
+                  <span class="status-label">Model</span>
+                  <span class="status-value" id="embedding-model">--</span>
+                </div>
+                <div class="status-row">
+                  <span class="status-label">Dimensions</span>
+                  <span class="status-value" id="embedding-dimensions">--</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Scheduler Status -->
+            <div class="status-card">
+              <div class="status-card-header">
+                <span class="status-card-icon">⏰</span>
+                <span class="status-card-title">Scheduler</span>
+                <span class="status-dot" id="scheduler-status-dot"></span>
+              </div>
+              <div class="status-card-body">
+                <div class="status-row">
+                  <span class="status-label">Status</span>
+                  <span class="status-value" id="scheduler-status">--</span>
+                </div>
+                <div class="status-row">
+                  <span class="status-label">Config</span>
+                  <span class="status-value" id="scheduler-config">--</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- Memory Detail Modal -->
+  <div class="modal-overlay hidden" id="memory-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Memory Details</h3>
+        <button class="btn btn-icon modal-close" id="modal-close">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer">
+        <button class="btn btn-danger" id="modal-delete">Delete Memory</button>
+        <button class="btn" id="modal-cancel">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notifications -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
