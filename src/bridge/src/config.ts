@@ -2,6 +2,8 @@
  * Configuration for the memory bridge
  */
 
+import { homedir } from 'node:os';
+
 export interface BridgeConfig {
   /** TencentDB data directory */
   dataDir: string;
@@ -35,10 +37,22 @@ export const defaultConfig: BridgeConfig = {
   logLevel: 'info',
 };
 
+function expandHomeDir(path: string): string {
+  if (path === '~') {
+    return homedir();
+  }
+  if (path.startsWith('~/')) {
+    return `${homedir()}${path.slice(1)}`;
+  }
+  return path;
+}
+
 export function loadConfig(): BridgeConfig {
+  const dataDir = process.env.MEMORY_DATA_DIR || defaultConfig.dataDir;
+
   return {
     ...defaultConfig,
-    dataDir: process.env.MEMORY_DATA_DIR || defaultConfig.dataDir,
+    dataDir: expandHomeDir(dataDir),
     llm: {
       ...defaultConfig.llm,
       baseUrl: process.env.LLM_BASE_URL || defaultConfig.llm.baseUrl,

@@ -3,10 +3,10 @@
   "plugin": ["memory-bridge"],
   "mcp": {
     "memory-bridge": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["./src/bridge/dist/mcp-server.js"],
-      "env": {
+      "type": "local",
+      "command": ["node", "./src/bridge/dist/mcp-server.js"],
+      "enabled": true,
+      "environment": {
         "LLM_API_KEY": "{env:LLM_API_KEY}",
         "LLM_BASE_URL": "{env:LLM_BASE_URL}",
         "LLM_MODEL": "{env:LLM_MODEL}",
