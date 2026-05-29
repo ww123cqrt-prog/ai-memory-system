@@ -103,8 +103,7 @@ async function ensureInitialized(): Promise<void> {
   if (!initPromise) {
     initPromise = (async () => {
       try {
-        // Dynamic import to avoid TypeScript issues
-        const tencentdbPath = '../../../vendor/tencentdb/src/core/tdai-core.js';
+        const tencentdbPath = process.env.TENCENTDB_CORE_PATH || '../../../vendor/tencentdb/src/core/tdai-core.js';
         const tencentdb = await import(tencentdbPath);
         TdaiCore = tencentdb.TdaiCore;
         
@@ -117,9 +116,13 @@ async function ensureInitialized(): Promise<void> {
         console.error('[Bridge] TdaiCore initialized');
       } catch (err) {
         console.error('[Bridge] Failed to initialize TdaiCore:', err);
-        initPromise = null;  // Allow retry
+        initPromise = null;
         throw err;
       }
+    })();
+  }
+  await initPromise;
+}
     })();
   }
   await initPromise;
@@ -216,21 +219,40 @@ server.tool(
   async ({ user_id, agent_id, page, page_size }) => {
     await ensureInitialized();
     
-    const offset = (page - 1) * page_size;
-    const result = await core.searchConversations({
-      query: '',
-      limit: page_size,
-      offset: offset,
-    });
+    const store = core.getVectorStore();
+    if (!store) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: 'Vector store not available',
+          }),
+        }],
+      };
+    }
     
-    const total = result.total || 0;
+    const records = store.queryL1Records();
+    const total = records.length;
     const total_pages = Math.ceil(total / page_size);
+    const offset = (page - 1) * page_size;
+    const paginatedRecords = records.slice(offset, offset + page_size);
     
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
-          memories: result.text,
+          memories: paginatedRecords.map((r: any) => ({
+            id: r.record_id,
+            content: r.content,
+            type: r.type,
+            priority: r.priority,
+            scene_name: r.scene_name,
+            session_key: r.session_key,
+            session_id: r.session_id,
+            created_at: r.created_time,
+            updated_at: r.updated_time,
+          })),
           total,
           page,
           page_size,
@@ -452,8 +474,21 @@ server.tool(
   async ({ entity_type, entity_id }) => {
     await ensureInitialized();
     
-    const records = await core.searchConversations({ query: '', limit: 10000 });
-    const toDelete = (records.text || []).filter((r: any) => 
+    const store = core.getVectorStore();
+    if (!store) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: 'Vector store not available',
+          }),
+        }],
+      };
+    }
+    
+    const records = store.queryL1Records();
+    const toDelete = records.filter((r: any) => 
       r.session_id === entity_id || r.user_id === entity_id
     );
     
@@ -469,35 +504,23 @@ server.tool(
       };
     }
     
-    // @ts-expect-error - node:sqlite types not available in all @types/node versions
-    const { DatabaseSync } = await import('node:sqlite');
-    const { homedir } = await import('node:os');
-    const { join } = await import('node:path');
-    const dbPath = join(homedir(), '.memory-tdai', 'vectors.db');
-    const db = new DatabaseSync(dbPath);
-    
-    try {
-      let deleted = 0;
-      for (const record of toDelete) {
-        db.prepare('DELETE FROM l0_conversations WHERE record_id = ?').run(record.record_id);
-        db.prepare('DELETE FROM l1_records WHERE record_id = ?').run(record.record_id);
-        deleted++;
-      }
-      
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            success: true,
-            entity_type,
-            entity_id,
-            deleted,
-          }),
-        }],
-      };
-    } finally {
-      db.close();
+    let deleted = 0;
+    for (const record of toDelete) {
+      store.deleteL1(record.record_id);
+      deleted++;
     }
+    
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          entity_type,
+          entity_id,
+          deleted,
+        }),
+      }],
+    };
   }
 );
 
@@ -511,10 +534,23 @@ server.tool(
   async ({ entity_type }) => {
     await ensureInitialized();
     
-    const records = await core.searchConversations({ query: '', limit: 1000 });
+    const store = core.getVectorStore();
+    if (!store) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: 'Vector store not available',
+          }),
+        }],
+      };
+    }
+    
+    const records = store.queryL1Records();
     const entities = new Map();
     
-    for (const record of records.text || []) {
+    for (const record of records) {
       const recordType = record.user_id ? 'user' : 'agent';
       if (entity_type && recordType !== entity_type) continue;
       
@@ -524,7 +560,7 @@ server.tool(
         entities.set(key, {
           type: recordType,
           id: entityId,
-          created: record.timestamp || Date.now(),
+          created: record.created_time || Date.now(),
         });
       }
     }

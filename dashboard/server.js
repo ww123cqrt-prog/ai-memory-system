@@ -288,21 +288,23 @@ app.post('/api/scheduler/trigger/:name', async (req, res) => {
       return res.status(404).json({ error: `Task "${name}" not found in config` });
     }
 
-    // Get the task module path
-    const taskPath = task.module || task.script;
+    const taskScriptMap = {
+      'daily-summary': 'scripts/start-scheduler.ts',
+      'project-checker': 'scripts/start-scheduler.ts',
+    };
+
+    const taskPath = taskScriptMap[name];
     if (!taskPath) {
-      return res.status(400).json({ error: `Task "${name}" has no module/script defined` });
+      return res.status(400).json({ error: `Task "${name}" has no script mapping` });
     }
 
-    // Resolve the full path
     const fullPath = resolve(PROJECT_ROOT, taskPath);
 
     if (!existsSync(fullPath)) {
       return res.status(404).json({ error: `Task script not found: ${fullPath}` });
     }
 
-    // Spawn the task as a child process
-    const child = spawn('node', [fullPath], {
+    const child = spawn('npx', ['tsx', fullPath], {
       cwd: PROJECT_ROOT,
       env: { ...process.env },
       stdio: ['pipe', 'pipe', 'pipe'],
