@@ -2,7 +2,14 @@
 # AI Memory System - Scheduler Cron Wrapper
 # Runs the daily summary task via node-cron
 
-export LLM_API_KEY="tp-s6wizppnb4mx98viw6j7eewj4drlrojql2qzoieodqmhcjdr"
+# Load from local env file
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/../.env.local" ]; then
+  source "$SCRIPT_DIR/../.env.local"
+else
+  echo "Error: .env.local not found. Copy .env.local.example to .env.local and add your API key."
+  exit 1
+fi
 export LLM_BASE_URL="https://token-plan-sgp.xiaomimimo.com/v1"
 export LLM_MODEL="mimo-v2.5-pro"
 export EMBEDDING_BASE_URL="http://localhost:1234/v1"

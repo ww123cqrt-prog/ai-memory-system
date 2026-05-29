@@ -93,8 +93,8 @@ const tdaiConfig = {
 // TdaiCore instance (initialized lazily)
 let core: any = null;
 
-// Memory store for tracking entities (in-memory, can be persisted later)
-const entities = new Map<string, { type: string; id: string; created: number }>();
+// Memory store for tracking entities - derived from TdaiCore database queries
+// const entities = new Map<string, { type: string; id: string; created: number }>();
 
 // Initialize core
 let initPromise: Promise<void> | null = null;
@@ -117,6 +117,7 @@ async function ensureInitialized(): Promise<void> {
         console.error('[Bridge] TdaiCore initialized');
       } catch (err) {
         console.error('[Bridge] Failed to initialize TdaiCore:', err);
+        initPromise = null;  // Allow retry
         throw err;
       }
     })();
@@ -151,14 +152,6 @@ server.tool(
       messages: [{ role: 'user', content: text }],
       sessionKey,
       sessionId: metadata?.session_id,
-    });
-    
-    // Track entity
-    const entityId = user_id || agent_id || 'default';
-    entities.set(entityId, {
-      type: user_id ? 'user' : 'agent',
-      id: entityId,
-      created: Date.now(),
     });
     
     return {
@@ -223,20 +216,26 @@ server.tool(
   async ({ user_id, agent_id, page, page_size }) => {
     await ensureInitialized();
     
-    // For now, use searchConversations with empty query
+    const offset = (page - 1) * page_size;
     const result = await core.searchConversations({
       query: '',
       limit: page_size,
+      offset: offset,
     });
+    
+    const total = result.total || 0;
+    const total_pages = Math.ceil(total / page_size);
     
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
           memories: result.text,
-          total: result.total,
+          total,
           page,
           page_size,
+          total_pages,
+          has_more: page < total_pages,
         }),
       }],
     };
@@ -267,7 +266,8 @@ server.tool(
     }
 
     const records = await store.queryL1Records();
-    const record = records.find((r: any) => r.record_id === memory_id);
+    const recordMap = new Map<string, any>(records.map((r: any) => [r.record_id, r]));
+    const record = recordMap.get(memory_id);
 
     if (!record) {
       return {
@@ -429,14 +429,12 @@ server.tool(
     agent_id: z.string().optional(),
   },
   async ({ user_id, agent_id }) => {
-    // Note: TdaiCore doesn't have a direct deleteAllMemories method
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
-          success: true,
-          deleted: 0,
-          note: 'Bulk delete not yet implemented in bridge',
+          success: false,
+          error: 'Bulk delete not implemented. Use delete_memory for individual records. TdaiCore does not support deleteAllMemories.',
         }),
       }],
     };
@@ -452,14 +450,54 @@ server.tool(
     entity_id: z.string().describe('Entity ID to delete'),
   },
   async ({ entity_type, entity_id }) => {
-    entities.delete(entity_id);
+    await ensureInitialized();
     
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({ success: true }),
-      }],
-    };
+    const records = await core.searchConversations({ query: '', limit: 10000 });
+    const toDelete = (records.text || []).filter((r: any) => 
+      r.session_id === entity_id || r.user_id === entity_id
+    );
+    
+    if (toDelete.length === 0) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: `Entity not found: ${entity_type}:${entity_id}`,
+          }),
+        }],
+      };
+    }
+    
+    // @ts-expect-error - node:sqlite types not available in all @types/node versions
+    const { DatabaseSync } = await import('node:sqlite');
+    const { homedir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dbPath = join(homedir(), '.memory-tdai', 'vectors.db');
+    const db = new DatabaseSync(dbPath);
+    
+    try {
+      let deleted = 0;
+      for (const record of toDelete) {
+        db.prepare('DELETE FROM l0_conversations WHERE record_id = ?').run(record.record_id);
+        db.prepare('DELETE FROM l1_records WHERE record_id = ?').run(record.record_id);
+        deleted++;
+      }
+      
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            entity_type,
+            entity_id,
+            deleted,
+          }),
+        }],
+      };
+    } finally {
+      db.close();
+    }
   }
 );
 
@@ -471,20 +509,32 @@ server.tool(
     entity_type: z.enum(['user', 'agent', 'app', 'run']).optional(),
   },
   async ({ entity_type }) => {
-    const list = Array.from(entities.values());
-    const filtered = entity_type
-      ? list.filter(e => e.type === entity_type)
-      : list;
+    await ensureInitialized();
+    
+    const records = await core.searchConversations({ query: '', limit: 1000 });
+    const entities = new Map();
+    
+    for (const record of records.text || []) {
+      const recordType = record.user_id ? 'user' : 'agent';
+      if (entity_type && recordType !== entity_type) continue;
+      
+      const entityId = record.user_id || record.session_id || 'unknown';
+      const key = `${recordType}:${entityId}`;
+      if (!entities.has(key)) {
+        entities.set(key, {
+          type: recordType,
+          id: entityId,
+          created: record.timestamp || Date.now(),
+        });
+      }
+    }
     
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
-          entities: filtered.map(e => ({
-            type: e.type,
-            id: e.id,
-            created: new Date(e.created).toISOString(),
-          })),
+          entities: Array.from(entities.values()),
+          total: entities.size,
         }),
       }],
     };

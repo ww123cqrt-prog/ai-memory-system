@@ -11,6 +11,7 @@ import express from 'express';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
+import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
@@ -269,9 +270,9 @@ app.get('/api/scheduler/tasks', (req, res) => {
 
 /**
  * POST /api/scheduler/trigger/:name
- * Manually trigger a scheduled task
+ * Manually trigger a scheduled task by spawning it as a child process
  */
-app.post('/api/scheduler/trigger/:name', (req, res) => {
+app.post('/api/scheduler/trigger/:name', async (req, res) => {
   try {
     const { name } = req.params;
     
@@ -287,15 +288,59 @@ app.post('/api/scheduler/trigger/:name', (req, res) => {
       return res.status(404).json({ error: `Task "${name}" not found in config` });
     }
 
-    res.json({
-      success: true,
-      message: `Task "${name}" trigger request received`,
-      note: 'Manual trigger requires the scheduler service to be running',
-      task: {
-        name,
-        cron: task.cron,
-        description: task.description,
-      },
+    // Get the task module path
+    const taskPath = task.module || task.script;
+    if (!taskPath) {
+      return res.status(400).json({ error: `Task "${name}" has no module/script defined` });
+    }
+
+    // Resolve the full path
+    const fullPath = resolve(PROJECT_ROOT, taskPath);
+
+    if (!existsSync(fullPath)) {
+      return res.status(404).json({ error: `Task script not found: ${fullPath}` });
+    }
+
+    // Spawn the task as a child process
+    const child = spawn('node', [fullPath], {
+      cwd: PROJECT_ROOT,
+      env: { ...process.env },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    child.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    // Set timeout (5 minutes max)
+    const timeout = setTimeout(() => {
+      child.kill('SIGTERM');
+    }, 5 * 60 * 1000);
+
+    child.on('close', (code) => {
+      clearTimeout(timeout);
+      res.json({
+        success: code === 0,
+        message: `Task "${name}" completed with exit code ${code}`,
+        exit_code: code,
+        stdout: stdout.slice(-2000),
+        stderr: stderr.slice(-2000),
+      });
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(timeout);
+      res.status(500).json({
+        success: false,
+        error: `Failed to spawn task: ${err.message}`,
+      });
     });
   } catch (error) {
     console.error('[API] Error triggering task:', error);
@@ -542,7 +587,7 @@ function parseJsonl(filePath) {
 
 // ─── Start Server ───────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
+app.listen(PORT, '127.0.0.1', () => {
   console.log(`
 ┌──────────────────────────────────────────────────────────────┐
 │                                                              │

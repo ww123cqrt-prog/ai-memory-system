@@ -16,8 +16,8 @@ const DEFAULT_CONFIG: LLMConfig = {
   baseUrl: 'https://token-plan-sgp.xiaomimimo.com/v1',
   apiKey: '',
   model: 'mimo-v2.5-pro',
-  maxTokens: 2000,
-  timeoutMs: 30000,
+  maxTokens: 4000,
+  timeoutMs: 120000,
   maxRetries: 3,
   retryDelayMs: 1000,
 };

@@ -29,6 +29,10 @@ export interface DailySummaryOptions {
   date?: Date;
   /** 是否存入记忆系统 */
   saveToMemory: boolean;
+  /** 扫描所有历史记录（用于初始化） */
+  scanAllHistory?: boolean;
+  /** 历史扫描天数（默认 30 天） */
+  historyDays?: number;
   /** LLM 配置覆盖 */
   llmConfig?: {
     baseUrl?: string;
@@ -53,11 +57,20 @@ interface SessionWithMessages {
  * 4. Save to memory system
  */
 export async function dailySummaryTask(options: DailySummaryOptions): Promise<string> {
-  const { sources, date = new Date(), saveToMemory, llmConfig } = options;
+  const { sources, date = new Date(), saveToMemory, scanAllHistory, historyDays = 30, llmConfig } = options;
 
-  // 1. Collect today's conversations
-  const todayStart = new Date(date);
-  todayStart.setHours(0, 0, 0, 0);
+  // Validate historyDays
+  if (scanAllHistory && (isNaN(historyDays) || historyDays <= 0)) {
+    throw new Error(`historyDays must be a positive integer, got: ${historyDays}`);
+  }
+
+  const scanStart = new Date(date);
+  if (scanAllHistory) {
+    scanStart.setDate(scanStart.getDate() - historyDays);
+    console.log(`[daily-summary] Scanning all history from ${scanStart.toISOString().split('T')[0]}`);
+  } else {
+    scanStart.setHours(0, 0, 0, 0);
+  }
 
   const allSessions: SessionWithMessages[] = [];
 
@@ -68,7 +81,7 @@ export async function dailySummaryTask(options: DailySummaryOptions): Promise<st
         continue;
       }
 
-      const sessions = await source.listSessions(todayStart);
+      const sessions = await source.listSessions(scanStart);
       console.log(`[daily-summary] Found ${sessions.length} sessions from ${source.name}`);
 
       for (const session of sessions) {
@@ -90,8 +103,9 @@ export async function dailySummaryTask(options: DailySummaryOptions): Promise<st
   }
 
   if (allSessions.length === 0) {
-    console.log('[daily-summary] No conversations found today');
-    return 'No conversations found today';
+    const range = scanAllHistory ? `past ${historyDays} days` : 'today';
+    console.log(`[daily-summary] No conversations found ${range}`);
+    return `No conversations found ${range}`;
   }
 
   // 2. Format conversation content
@@ -109,13 +123,27 @@ export async function dailySummaryTask(options: DailySummaryOptions): Promise<st
     console.warn(`[daily-summary] Content truncated from ${formattedConversations.length} to ${truncatedContent.length} chars`);
   }
 
-  // 3. Call LLM to generate summary
-  const prompt = buildSummaryPrompt(truncatedContent, date);
+  if (saveToMemory) {
+    try {
+      await saveConversationsToMemory(allSessions);
+    } catch (error) {
+      console.warn('[daily-summary] Failed to save raw conversations:', error instanceof Error ? error.message : error);
+    }
+  }
+
+  // 4. Call LLM to generate summary
+  const prompt = buildSummaryPrompt(truncatedContent, date, scanAllHistory);
   console.log('[daily-summary] Calling LLM to generate summary...');
 
-  const summary = await callLLM(prompt, llmConfig);
+  let summary: string;
+  try {
+    summary = await callLLM(prompt, llmConfig);
+  } catch (error) {
+    console.error('[daily-summary] LLM call failed:', error instanceof Error ? error.message : error);
+    throw new Error(`LLM call failed: ${error instanceof Error ? error.message : error}`);
+  }
 
-  // 4. Save to memory system
+  // 5. Save to memory system
   if (saveToMemory) {
     try {
       await saveSummaryToMemory(summary, date);
@@ -135,25 +163,26 @@ export async function dailySummaryTask(options: DailySummaryOptions): Promise<st
 /**
  * Build the summary prompt
  */
-function buildSummaryPrompt(conversations: string, date: Date): string {
+function buildSummaryPrompt(conversations: string, date: Date, scanAllHistory?: boolean): string {
   const dateStr = date.toISOString().split('T')[0];
-  return `你是每日工作总结助手。请根据以下 ${dateStr} 的对话记录，整理今天的工作总结。
+  const range = scanAllHistory ? '历史' : dateStr;
+  return `你是每日工作总结助手。请根据以下 ${range} 的对话记录，整理工作总结。
 
 ## 要求
 
 输出格式：
 
-### 今日完成
-- （2-5 条）
+### 完成的主要工作
+- （3-10 条，按重要性排序）
 
 ### 学到的知识
-- （1-3 条）
+- （2-5 条）
 
 ### 待解决问题
-- （1-3 条）
+- （1-5 条）
 
-### 明日计划
-- （1-3 条）
+### 下一步计划
+- （1-5 条）
 
 ## 对话记录
 
@@ -163,15 +192,85 @@ ${conversations}
 }
 
 /**
- * Save summary to memory system via MCP
+ * Open a connection to the memory SQLite database
+ */
+function getDb() {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { DatabaseSync } = require('node:sqlite');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { homedir } = require('node:os');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { join } = require('node:path');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { existsSync } = require('node:fs');
+
+  const dbPath = join(homedir(), '.memory-tdai', 'vectors.db');
+  if (!existsSync(dbPath)) {
+    throw new Error(`Memory database not found: ${dbPath}`);
+  }
+  return new DatabaseSync(dbPath);
+}
+
+/**
+ * Save summary to memory system via direct SQLite
  */
 async function saveSummaryToMemory(summary: string, date: Date): Promise<void> {
   const dateStr = date.toISOString().split('T')[0];
   const content = `## ${dateStr} 每日工作总结\n\n${summary}`;
 
-  // TODO: Implement MCP call to add_memory — remove this throw once done
-  throw new Error(
-    'saveSummaryToMemory is not implemented yet. ' +
-    `Summary for ${dateStr} was generated but not persisted to memory system.`
-  );
+  const db = getDb();
+  try {
+    const recordId = `daily-summary:${dateStr}`;
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT OR REPLACE INTO l0_conversations 
+      (record_id, session_key, session_id, role, message_text, recorded_at, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(recordId, 'daily-summary:default', 'scheduler', 'assistant', content, now, date.getTime());
+
+    console.log(`[daily-summary] Saved summary to memory: ${recordId}`);
+  } finally {
+    db.close();
+  }
+}
+
+async function saveConversationsToMemory(sessions: SessionWithMessages[]): Promise<void> {
+  const db = getDb();
+  try {
+    db.exec('BEGIN TRANSACTION');
+    
+    const stmt = db.prepare(`
+      INSERT OR IGNORE INTO l0_conversations 
+      (record_id, session_key, session_id, role, message_text, recorded_at, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    
+    const now = new Date().toISOString();
+    let saved = 0;
+    
+    for (const { source, session, messages } of sessions) {
+      for (const msg of messages) {
+        const recordId = `l0:${source}:${session.id}:${msg.id}`;
+        try {
+          stmt.run(recordId, `${source}:${session.id}`, session.id, msg.role, msg.content, now, msg.timestamp.getTime());
+          saved++;
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
+            // Duplicate, skip silently
+          } else {
+            console.warn(`[daily-summary] Failed to save message ${recordId}:`, error);
+          }
+        }
+      }
+    }
+    
+    db.exec('COMMIT');
+    console.log(`[daily-summary] Saved ${saved} raw conversation messages to L0`);
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  } finally {
+    db.close();
+  }
 }

@@ -3,3 +3,8 @@ dist/
 .env
 *.log
 .DS_Store
+
+# Memory data (contains user conversations and embeddings)
+**/.memory-tdai/
+*.db
+.env.local

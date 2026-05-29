@@ -1,103 +1,103 @@
 /**
  * OpenCode conversation source adapter
  *
- * Uses OpenCode SDK to retrieve session and message data.
+ * Reads directly from OpenCode SQLite database at ~/.local/share/opencode/opencode.db
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import type { ConversationSource, Session, Message } from './types.js';
-
-/**
- * OpenCode SDK types (based on @opencode-ai/sdk)
- */
-interface OpenCodeSession {
-  id: string;
-  title?: string;
-  created_at: string;
-  updated_at: string;
-  directory?: string;
-}
-
-interface OpenCodeMessage {
-  id: string;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  created_at: string;
-}
-
-/**
- * Minimal OpenCode SDK interface we need
- */
-interface OpenCodeClient {
-  session: {
-    list(): Promise<OpenCodeSession[]>;
-    messages(sessionId: string): Promise<OpenCodeMessage[]>;
-  };
-}
 
 export class OpenCodeSource implements ConversationSource {
   name = 'opencode';
-  private client: OpenCodeClient | null = null;
-  private directory?: string;
+  private dbPath: string;
+  private db: DatabaseSync | null = null;
 
-  constructor(directory?: string) {
-    this.directory = directory;
+  constructor(dbPath?: string) {
+    this.dbPath = dbPath || path.join(os.homedir(), '.local', 'share', 'opencode', 'opencode.db');
   }
 
   async isAvailable(): Promise<boolean> {
     try {
-      const client = await this.getClient();
-      // Try to list sessions to check if SDK is working
-      await client.session.list();
-      return true;
+      if (!fs.existsSync(this.dbPath)) return false;
+      const db = this.getDb();
+      const result = db.prepare('SELECT COUNT(*) as count FROM session').get() as any;
+      return result?.count > 0;
     } catch {
       return false;
     }
   }
 
   async listSessions(since: Date): Promise<Session[]> {
-    const client = await this.getClient();
-    const sessions = await client.session.list();
+    const db = this.getDb();
+    const sinceMs = since.getTime();
+    
+    const rows = db.prepare(`
+      SELECT id, title, directory, time_created, time_updated
+      FROM session
+      WHERE time_updated >= ?
+      ORDER BY time_updated DESC
+    `).all(sinceMs) as any[];
 
-    return sessions
-      .filter(s => new Date(s.updated_at) >= since)
-      .map(s => ({
-        id: s.id,
-        source: this.name,
-        title: s.title,
-        createdAt: new Date(s.created_at),
-        updatedAt: new Date(s.updated_at),
-        directory: s.directory || this.directory,
-      }));
-  }
-
-  async getMessages(sessionId: string): Promise<Message[]> {
-    const client = await this.getClient();
-    const messages = await client.session.messages(sessionId);
-
-    return messages.map(m => ({
-      id: m.id,
-      role: m.role,
-      content: m.content,
-      timestamp: new Date(m.created_at),
+    return rows.map(row => ({
+      id: row.id,
+      source: this.name,
+      title: row.title || undefined,
+      createdAt: new Date(row.time_created),
+      updatedAt: new Date(row.time_updated),
+      directory: row.directory || undefined,
     }));
   }
 
-  private async getClient(): Promise<OpenCodeClient> {
-    if (this.client) {
-      return this.client;
+  async getMessages(sessionId: string): Promise<Message[]> {
+    const db = this.getDb();
+    
+    const rows = db.prepare(`
+      SELECT id, time_created, data
+      FROM message
+      WHERE session_id = ?
+      ORDER BY time_created ASC
+    `).all(sessionId) as any[];
+
+    const messages: Message[] = [];
+    for (const row of rows) {
+      try {
+        const data = JSON.parse(row.data);
+        const role = data.role;
+        if (!role || role === 'system') continue;
+        
+        let content = '';
+        if (typeof data.content === 'string') {
+          content = data.content;
+        } else if (Array.isArray(data.content)) {
+          content = data.content
+            .filter((b: any) => b.type === 'text' && b.text)
+            .map((b: any) => b.text)
+            .join('\n');
+        }
+        
+        if (content) {
+          messages.push({
+            id: row.id,
+            role: role as Message['role'],
+            content,
+            timestamp: new Date(row.time_created),
+          });
+        }
+      } catch {
+        // Skip malformed entries
+      }
     }
 
-    try {
-      // Dynamic import to avoid build errors if SDK is not installed
-      const sdk = await import('@opencode-ai/sdk');
-      this.client = sdk.createOpencodeClient({
-        // OpenCode SDK will auto-detect the running instance
-      }) as unknown as OpenCodeClient;
-      return this.client;
-    } catch (error) {
-      throw new Error(
-        `Failed to initialize OpenCode SDK: ${error instanceof Error ? error.message : String(error)}`
-      );
+    return messages;
+  }
+
+  private getDb(): DatabaseSync {
+    if (!this.db) {
+      this.db = new DatabaseSync(this.dbPath, { open: true, readOnly: true });
     }
+    return this.db;
   }
 }

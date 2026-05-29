@@ -29,8 +29,8 @@
 ├─────────────────────────────────────────────────────────────────────┤
 │  对话来源 (src/sources/)                                            │
 │  ├── opencode-source.ts  # OpenCode SDK 适配器                       │
-│  ├── claude-source.ts    # 【占位】Claude Code 适配器                 │
-│  └── codex-source.ts     # 【占位】Codex 适配器                      │
+│  ├── claude-source.ts    # Claude Code 适配器 (JSONL)                  │
+│  └── codex-source.ts     # Codex 适配器 (JSONL)                       │
 ├─────────────────────────────────────────────────────────────────────┤
 │  定时任务 (tasks/)                                                  │
 │  ├── daily-summary.ts    # 每日工作总结                              │
@@ -172,8 +172,8 @@ ai-memory-system/
 │   └── sources/               # 对话来源适配器
 │       ├── types.ts           # 统一接口
 │       ├── opencode-source.ts # OpenCode SDK 适配器
-│       ├── claude-source.ts   # 【占位】Claude Code 适配器
-│       ├── codex-source.ts    # 【占位】Codex 适配器
+│       ├── claude-source.ts   # Claude Code 适配器 (JSONL)
+│       ├── codex-source.ts    # Codex 适配器 (JSONL)
 │       └── index.ts           # 导出
 │
 ├── tasks/                     # 定时任务
@@ -209,11 +209,8 @@ ai-memory-system/
 
 ## 待完成
 
-- [ ] 实现 Claude Code 对话来源适配器
-- [ ] 实现 Codex 对话来源适配器
 - [ ] 实现相关项目检查任务
 - [ ] 添加测试
-- [ ] 实现 get_memory / update_memory / delete_memory (需要访问 vector store)
 - [ ] 部署脚本
 - [ ] 优化 LLM 配置 (支持更多 provider)
 

@@ -15,6 +15,6 @@
     "sourceMap": true,
     "types": ["node"]
   },
-  "include": ["tasks/**/*.ts", "src/sources/types.ts", "src/sources/claude-source.ts", "src/sources/codex-source.ts"],
+  "include": ["tasks/**/*.ts", "src/sources/types.ts", "src/sources/claude-source.ts", "src/sources/codex-source.ts", "src/sources/opencode-source.ts"],
   "exclude": ["node_modules", "dist", "vendor", "src/bridge", "src/scheduler"]
 }

@@ -27,11 +27,11 @@ export interface BridgeConfig {
 export const defaultConfig: BridgeConfig = {
   dataDir: '~/.memory-tdai',
   llm: {
-    baseUrl: 'https://api.openai.com/v1',
-    apiKey: process.env.OPENAI_API_KEY || '',
-    model: 'gpt-4o-mini',
+    baseUrl: process.env.LLM_BASE_URL || 'https://token-plan-sgp.xiaomimimo.com/v1',
+    apiKey: process.env.LLM_API_KEY || '',
+    model: process.env.LLM_MODEL || 'mimo-v2.5-pro',
     maxTokens: 4096,
-    timeoutMs: 30000,
+    timeoutMs: 120000,  // Match the increased timeout
   },
   port: 8420,
   logLevel: 'info',

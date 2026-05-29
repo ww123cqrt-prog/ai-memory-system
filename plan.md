@@ -623,7 +623,7 @@ pm2 logs memory-scheduler
 # .env 或 crontab 中设置
 
 # LLM 配置
-LLM_API_KEY=tp-s6wizppnb4mx98viw6j7eewj4drlrojql2qzoieodqmhcjdr
+LLM_API_KEY=<your-api-key-here>
 LLM_BASE_URL=https://token-plan-sgp.xiaomimimo.com/v1
 LLM_MODEL=mimo-v2.5-pro
 

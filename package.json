@@ -10,7 +10,8 @@
     "start:bridge": "cd src/bridge && npm start",
     "start:scheduler": "node_modules/.bin/tsx scripts/start-scheduler.ts",
     "dev:bridge": "cd src/bridge && npm run dev",
-    "dev:scheduler": "cd src/scheduler && npm run dev"
+    "dev:scheduler": "cd src/scheduler && npm run dev",
+    "init-history": "tsx scripts/init-history.ts"
   },
   "workspaces": [
     "src/bridge",
