@@ -2,6 +2,10 @@
  * Daily summary task - consolidate today's work
  */
 
+import { DatabaseSync } from 'node:sqlite';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import type { ConversationSource, Session, Message } from '../src/sources/types.js';
 import { callLLM } from './llm-client.js';
 
@@ -194,21 +198,15 @@ ${conversations}
 /**
  * Open a connection to the memory SQLite database
  */
+let _db: InstanceType<typeof DatabaseSync> | null = null;
 function getDb() {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { DatabaseSync } = require('node:sqlite');
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { homedir } = require('node:os');
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { join } = require('node:path');
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { existsSync } = require('node:fs');
-
+  if (_db) return _db;
   const dbPath = join(homedir(), '.memory-tdai', 'vectors.db');
   if (!existsSync(dbPath)) {
     throw new Error(`Memory database not found: ${dbPath}`);
   }
-  return new DatabaseSync(dbPath);
+  _db = new DatabaseSync(dbPath);
+  return _db;
 }
 
 /**
@@ -219,27 +217,23 @@ async function saveSummaryToMemory(summary: string, date: Date): Promise<void> {
   const content = `## ${dateStr} 每日工作总结\n\n${summary}`;
 
   const db = getDb();
-  try {
-    const recordId = `daily-summary:${dateStr}`;
-    const now = new Date().toISOString();
+  const recordId = `daily-summary:${dateStr}`;
+  const now = new Date().toISOString();
 
-    db.prepare(`
-      INSERT OR REPLACE INTO l0_conversations 
-      (record_id, session_key, session_id, role, message_text, recorded_at, timestamp)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(recordId, 'daily-summary:default', 'scheduler', 'assistant', content, now, date.getTime());
+  db.prepare(`
+    INSERT OR REPLACE INTO l0_conversations 
+    (record_id, session_key, session_id, role, message_text, recorded_at, timestamp)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(recordId, 'daily-summary:default', 'scheduler', 'assistant', content, now, date.getTime());
 
-    console.log(`[daily-summary] Saved summary to memory: ${recordId}`);
-  } finally {
-    db.close();
-  }
+  console.log(`[daily-summary] Saved summary to memory: ${recordId}`);
 }
 
 async function saveConversationsToMemory(sessions: SessionWithMessages[]): Promise<void> {
   const db = getDb();
+  db.exec('BEGIN TRANSACTION');
+  
   try {
-    db.exec('BEGIN TRANSACTION');
-    
     const stmt = db.prepare(`
       INSERT OR IGNORE INTO l0_conversations 
       (record_id, session_key, session_id, role, message_text, recorded_at, timestamp)
@@ -268,9 +262,7 @@ async function saveConversationsToMemory(sessions: SessionWithMessages[]): Promi
     db.exec('COMMIT');
     console.log(`[daily-summary] Saved ${saved} raw conversation messages to L0`);
   } catch (error) {
-    db.exec('ROLLBACK');
+    try { db.exec('ROLLBACK'); } catch { /* rollback failed, original error preserved */ }
     throw error;
-  } finally {
-    db.close();
   }
 }

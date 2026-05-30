@@ -43,9 +43,22 @@ interface ClaudeJsonlLine {
 export class ClaudeSource implements ConversationSource {
   name = 'claude';
   private claudeDir: string;
+  private jsonlCache: Map<string, ClaudeJsonlLine[]> = new Map();
+  private fileListCache: Map<string, string[]> = new Map();
 
   constructor(claudeDir?: string) {
     this.claudeDir = claudeDir || path.join(os.homedir(), '.claude');
+  }
+
+  /**
+   * Clear the internal JSONL file cache.
+   *
+   * Call this when files on disk may have changed (e.g. new conversations
+   * were created) and you need fresh reads.
+   */
+  clearCache(): void {
+    this.jsonlCache.clear();
+    this.fileListCache.clear();
   }
 
   /**
@@ -141,13 +154,15 @@ export class ClaudeSource implements ConversationSource {
    * scan to find every session file regardless of nesting depth.
    */
   private async findJsonlFiles(dir: string): Promise<string[]> {
+    const cached = this.fileListCache.get(dir);
+    if (cached) return cached;
+
     const results: string[] = [];
 
     let entries: fs.Dirent[];
     try {
       entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch {
-      // Directory does not exist or is unreadable – return empty
       return results;
     }
 
@@ -161,14 +176,22 @@ export class ClaudeSource implements ConversationSource {
       }
     }
 
+    this.fileListCache.set(dir, results);
     return results;
   }
 
   /**
    * Read a JSONL file and parse every non-empty line as JSON.
    * Malformed lines are silently skipped.
+   *
+   * Results are cached by absolute file path so repeated reads of the same
+   * file (e.g. `listSessions` then `getMessages`) don't hit disk twice.
+   * Call `clearCache()` to invalidate.
    */
   private async readJsonl(filePath: string): Promise<ClaudeJsonlLine[]> {
+    const cached = this.jsonlCache.get(filePath);
+    if (cached) return cached;
+
     let raw: string;
     try {
       raw = await fs.promises.readFile(filePath, 'utf-8');
@@ -186,6 +209,8 @@ export class ClaudeSource implements ConversationSource {
         // Malformed JSON line – skip
       }
     }
+
+    this.jsonlCache.set(filePath, lines);
     return lines;
   }
 

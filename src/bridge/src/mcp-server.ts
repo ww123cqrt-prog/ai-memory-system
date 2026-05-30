@@ -123,9 +123,25 @@ async function ensureInitialized(): Promise<void> {
   }
   await initPromise;
 }
-    })();
-  }
-  await initPromise;
+
+function wrapHandler<T>(handler: (params: T) => Promise<any>) {
+  return async (params: T) => {
+    try {
+      return await handler(params);
+    } catch (error) {
+      console.error('[Bridge] MCP tool error:', error);
+      return {
+        isError: true,
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        }],
+      };
+    }
+  };
 }
 
 const server = new McpServer({
@@ -143,7 +159,7 @@ server.tool(
     agent_id: z.string().optional().describe('Agent identifier'),
     metadata: z.record(z.any()).optional().describe('Additional metadata'),
   },
-  async ({ text, user_id, agent_id, metadata }) => {
+  wrapHandler(async ({ text, user_id, agent_id, metadata }) => {
     await ensureInitialized();
     
     const sessionKey = `${user_id || 'default'}:${agent_id || 'default'}`;
@@ -182,7 +198,7 @@ server.tool(
     limit: z.number().optional().default(5),
     filters: z.record(z.any()).optional(),
   },
-  async ({ query, user_id, agent_id, limit, filters }) => {
+  wrapHandler(async ({ query, user_id, agent_id, limit, filters }) => {
     await ensureInitialized();
     
     // Call TdaiCore.searchMemories()
@@ -216,20 +232,12 @@ server.tool(
     page: z.number().optional().default(1),
     page_size: z.number().optional().default(20),
   },
-  async ({ user_id, agent_id, page, page_size }) => {
+  wrapHandler(async ({ user_id, agent_id, page, page_size }) => {
     await ensureInitialized();
     
     const store = core.getVectorStore();
     if (!store) {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            success: false,
-            error: 'Vector store not available',
-          }),
-        }],
-      };
+      throw new Error('Vector store not available');
     }
     
     const records = store.queryL1Records();
@@ -271,20 +279,12 @@ server.tool(
   {
     memory_id: z.string().describe('Memory ID to retrieve'),
   },
-  async ({ memory_id }) => {
+  wrapHandler(async ({ memory_id }) => {
     await ensureInitialized();
 
     const store = core.getVectorStore();
     if (!store) {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            success: false,
-            error: 'Vector store not available',
-          }),
-        }],
-      };
+      throw new Error('Vector store not available');
     }
 
     const records = await store.queryL1Records();
@@ -333,20 +333,12 @@ server.tool(
     text: z.string().describe('New text content'),
     metadata: z.record(z.any()).optional(),
   },
-  async ({ memory_id, text, metadata }) => {
+  wrapHandler(async ({ memory_id, text, metadata }) => {
     await ensureInitialized();
 
     const store = core.getVectorStore();
     if (!store) {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            success: false,
-            error: 'Vector store not available',
-          }),
-        }],
-      };
+      throw new Error('Vector store not available');
     }
 
     const records = await store.queryL1Records();
@@ -412,20 +404,12 @@ server.tool(
   {
     memory_id: z.string().describe('Memory ID to delete'),
   },
-  async ({ memory_id }) => {
+  wrapHandler(async ({ memory_id }) => {
     await ensureInitialized();
 
     const store = core.getVectorStore();
     if (!store) {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            success: false,
-            error: 'Vector store not available',
-          }),
-        }],
-      };
+      throw new Error('Vector store not available');
     }
 
     const success = await store.deleteL1(memory_id);
@@ -471,20 +455,12 @@ server.tool(
     entity_type: z.enum(['user', 'agent', 'app', 'run']).describe('Type of entity'),
     entity_id: z.string().describe('Entity ID to delete'),
   },
-  async ({ entity_type, entity_id }) => {
+  wrapHandler(async ({ entity_type, entity_id }) => {
     await ensureInitialized();
     
     const store = core.getVectorStore();
     if (!store) {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            success: false,
-            error: 'Vector store not available',
-          }),
-        }],
-      };
+      throw new Error('Vector store not available');
     }
     
     const records = store.queryL1Records();
@@ -531,20 +507,12 @@ server.tool(
   {
     entity_type: z.enum(['user', 'agent', 'app', 'run']).optional(),
   },
-  async ({ entity_type }) => {
+  wrapHandler(async ({ entity_type }) => {
     await ensureInitialized();
     
     const store = core.getVectorStore();
     if (!store) {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            success: false,
-            error: 'Vector store not available',
-          }),
-        }],
-      };
+      throw new Error('Vector store not available');
     }
     
     const records = store.queryL1Records();

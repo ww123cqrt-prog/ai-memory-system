@@ -47,7 +47,9 @@ async function callOnce(cfg: LLMConfig, prompt: string): Promise<string> {
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Unknown error');
-      throw new Error(`LLM API error (${response.status}): ${errorText}`);
+      const err = new Error(`LLM API error (${response.status}): ${errorText}`);
+      (err as any).statusCode = response.status;
+      throw err;
     }
 
     const data = await response.json();
@@ -83,14 +85,15 @@ async function callWithRetry(cfg: LLMConfig, prompt: string): Promise<string> {
       lastError = error instanceof Error ? error : new Error(String(error));
 
       // Don't retry on client errors (4xx except 429)
-      if (lastError.message.includes('400') || lastError.message.includes('401') ||
-          lastError.message.includes('403') || lastError.message.includes('404')) {
+      const statusCode = (lastError as any).statusCode ?? lastError.message.match(/\b(4\d{2})\b/)?.[1];
+      if (statusCode && String(statusCode) !== '429') {
         throw lastError;
       }
 
       if (attempt < cfg.maxRetries) {
-        const delay = Math.min(cfg.retryDelayMs * Math.pow(2, attempt), 30000);
-        console.log(`[LLM] Retry attempt ${attempt + 1}/${cfg.maxRetries} after ${delay}ms - ${lastError.message}`);
+        const jitter = 0.5 + Math.random() * 0.5;
+        const delay = Math.min(cfg.retryDelayMs * Math.pow(2, attempt), 30000) * jitter;
+        console.log(`[LLM] Retry attempt ${attempt + 1}/${cfg.maxRetries} after ${Math.round(delay)}ms - ${lastError.message}`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
