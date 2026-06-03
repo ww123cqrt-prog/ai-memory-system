@@ -71,16 +71,16 @@ const tdaiConfig = {
     timeoutMs: config.llm.timeoutMs,
   },
   embedding: {
-    enabled: true,
-    provider: 'openai',
-    baseUrl: 'http://localhost:1234/v1',
-    apiKey: 'lm-studio',
-    model: 'text-embedding-qwen3-embedding-8b',
-    dimensions: 4096,
-    sendDimensions: true,
-    conflictRecallTopK: 5,
-    maxInputChars: 5000,
-    timeoutMs: 10000,
+    enabled: config.embedding.enabled,
+    provider: config.embedding.provider,
+    baseUrl: config.embedding.baseUrl,
+    apiKey: config.embedding.apiKey,
+    model: config.embedding.model,
+    dimensions: config.embedding.dimensions,
+    sendDimensions: config.embedding.sendDimensions,
+    conflictRecallTopK: config.embedding.conflictRecallTopK,
+    maxInputChars: config.embedding.maxInputChars,
+    timeoutMs: config.embedding.timeoutMs,
   },
   bm25: {
     language: 'zh',
@@ -184,7 +184,7 @@ server.tool(
         }),
       }],
     };
-  }
+  })
 );
 
 // Tool 2: search_memories
@@ -219,7 +219,7 @@ server.tool(
         }),
       }],
     };
-  }
+  })
 );
 
 // Tool 3: get_memories
@@ -269,7 +269,7 @@ server.tool(
         }),
       }],
     };
-  }
+  })
 );
 
 // Tool 4: get_memory
@@ -321,7 +321,7 @@ server.tool(
         }),
       }],
     };
-  }
+  })
 );
 
 // Tool 5: update_memory
@@ -394,7 +394,7 @@ server.tool(
         }),
       }],
     };
-  }
+  })
 );
 
 // Tool 6: delete_memory
@@ -423,7 +423,7 @@ server.tool(
         }),
       }],
     };
-  }
+  })
 );
 
 // Tool 7: delete_all_memories
@@ -497,7 +497,7 @@ server.tool(
         }),
       }],
     };
-  }
+  })
 );
 
 // Tool 9: list_entities
@@ -542,7 +542,7 @@ server.tool(
         }),
       }],
     };
-  }
+  })
 );
 
 // Start server

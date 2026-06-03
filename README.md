@@ -69,11 +69,42 @@ npm run build
 
 ### 3. 配置环境变量
 
+Windows PowerShell:
+
+```powershell
+$env:LLM_API_KEY = "your-api-key"
+$env:LLM_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/v1"
+$env:LLM_MODEL = "mimo-v2.5-pro"
+$env:MEMORY_DATA_DIR = "~/.memory-tdai"
+
+# 默认使用本机 Ollama embedding 服务。
+# 先确认 Ollama 已启动，并已拉取模型：
+# ollama pull qwen3-embedding
+$env:EMBEDDING_PROVIDER = "ollama"
+$env:EMBEDDING_MODEL = "qwen3-embedding"
+```
+
+如果 Windows 端的 Ollama 设置了自定义端口，例如 `$env:OLLAMA_HOST = "0.0.0.0:11522"`，bridge 会自动把 Ollama embedding 地址解析为 `http://127.0.0.1:11522/v1`。也可以直接用 `EMBEDDING_BASE_URL` 覆盖。
+
+macOS/Linux:
+
 ```bash
 export LLM_API_KEY="your-api-key"
 export LLM_BASE_URL="https://token-plan-sgp.xiaomimimo.com/v1"
 export LLM_MODEL="mimo-v2.5-pro"
 export MEMORY_DATA_DIR="~/.memory-tdai"
+export EMBEDDING_PROVIDER="ollama"
+export EMBEDDING_MODEL="qwen3-embedding"
+```
+
+如果使用 LM Studio 的 OpenAI-compatible server：
+
+```powershell
+$env:EMBEDDING_PROVIDER = "lm-studio"
+$env:EMBEDDING_BASE_URL = "http://127.0.0.1:1234/v1"
+$env:EMBEDDING_API_KEY = "lm-studio"
+$env:EMBEDDING_MODEL = "text-embedding-qwen3-embedding-8b"
+$env:EMBEDDING_SEND_DIMENSIONS = "false"
 ```
 
 ### 4. 启动 MCP Server
@@ -112,6 +143,13 @@ npm run start:scheduler
 | `LLM_BASE_URL` | LLM 接口地址 | `https://token-plan-sgp.xiaomimimo.com/v1` |
 | `LLM_MODEL` | 模型名称 | `mimo-v2.5-pro` |
 | `MEMORY_DATA_DIR` | 记忆数据目录 | `~/.memory-tdai` |
+| `EMBEDDING_ENABLED` | 是否启用向量 embedding | `true` |
+| `EMBEDDING_PROVIDER` | 本地 OpenAI-compatible embedding 服务预设：`ollama` 或 `lm-studio` | `ollama` |
+| `EMBEDDING_BASE_URL` | OpenAI-compatible embedding 地址 | `http://127.0.0.1:11434/v1` |
+| `EMBEDDING_API_KEY` | embedding API Key，本机 Ollama 可用占位值 | `ollama` |
+| `EMBEDDING_MODEL` | embedding 模型 | `qwen3-embedding` |
+| `EMBEDDING_DIMENSIONS` | embedding 维度，需与模型一致 | `4096` |
+| `EMBEDDING_SEND_DIMENSIONS` | 是否向 `/v1/embeddings` 发送 `dimensions` 字段；LM Studio 通常设为 `false` | `true` |
 | `LOG_LEVEL` | 日志级别 | `info` |
 | `SCHEDULER_CONFIG` | 调度器配置文件路径 | `./config/scheduler.json` |
 

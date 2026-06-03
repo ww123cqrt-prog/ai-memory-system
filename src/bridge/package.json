@@ -6,6 +6,7 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
+    "test:config": "node --import tsx test/config.test.ts",
     "start": "node dist/mcp-server.js",
     "dev": "tsx src/mcp-server.ts"
   },
