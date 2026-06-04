@@ -15,8 +15,20 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import {
+  ListPromptsRequestSchema,
+  ListResourceTemplatesRequestSchema,
+  ListResourcesRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { loadConfig } from './config.js';
+import {
+  deleteMemoryById,
+  findMemoryById,
+  findNewestL0RecordForTurn,
+  listMemories,
+  searchConversationMemories,
+} from './mcp-memory-store.js';
 import { MemBridgeHostAdapter } from './tdai-adapter.js';
 
 // Import TdaiCore dynamically at runtime
@@ -149,6 +161,14 @@ const server = new McpServer({
   version: '0.1.0',
 });
 
+server.server.registerCapabilities({
+  resources: { listChanged: false },
+  prompts: { listChanged: false },
+});
+server.server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: [] }));
+server.server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: [] }));
+server.server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: [] }));
+
 // Tool 1: add_memory
 server.tool(
   'add_memory',
@@ -163,22 +183,38 @@ server.tool(
     await ensureInitialized();
     
     const sessionKey = `${user_id || 'default'}:${agent_id || 'default'}`;
+    const sessionId = metadata?.session_id;
+    const timestamp = Date.now();
     
     // Call TdaiCore.handleTurnCommitted()
     const result = await core.handleTurnCommitted({
       userText: text,
       assistantText: '',
-      messages: [{ role: 'user', content: text }],
+      messages: [{
+        id: `mcp_${timestamp}`,
+        role: 'user',
+        content: text,
+        timestamp,
+      }],
       sessionKey,
-      sessionId: metadata?.session_id,
+      sessionId,
+      originalUserMessageCount: 0,
+      startedAt: timestamp - 1,
     });
+
+    const store = core.getVectorStore();
+    const captured = store
+      ? await findNewestL0RecordForTurn(store, sessionKey, text, sessionId)
+      : null;
     
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
           success: true,
-          id: `mem_${Date.now()}`,
+          id: captured?.id,
+          layer: captured?.layer || 'l0',
+          memory: captured,
           l0_recorded: result.l0RecordedCount,
           scheduler_notified: result.schedulerNotified,
         }),
@@ -200,6 +236,7 @@ server.tool(
   },
   wrapHandler(async ({ query, user_id, agent_id, limit, filters }) => {
     await ensureInitialized();
+    const store = core.getVectorStore();
     
     // Call TdaiCore.searchMemories()
     const result = await core.searchMemories({
@@ -208,14 +245,25 @@ server.tool(
       type: filters?.type,
       scene: filters?.scene,
     });
+    const sessionKey = user_id || agent_id ? `${user_id || 'default'}:${agent_id || 'default'}` : undefined;
+    const l0Result = store
+      ? await searchConversationMemories(store, { query, limit, sessionKey })
+      : { results: [], total: 0, strategy: 'none' };
     
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
           results: result.text,
-          total: result.total,
-          strategy: result.strategy,
+          memories: l0Result.results,
+          total: result.total + l0Result.total,
+          strategy: l0Result.total > 0 ? `${result.strategy}+l0-${l0Result.strategy}` : result.strategy,
+          l1: {
+            results: result.text,
+            total: result.total,
+            strategy: result.strategy,
+          },
+          l0: l0Result,
         }),
       }],
     };
@@ -240,33 +288,12 @@ server.tool(
       throw new Error('Vector store not available');
     }
     
-    const records = store.queryL1Records();
-    const total = records.length;
-    const total_pages = Math.ceil(total / page_size);
-    const offset = (page - 1) * page_size;
-    const paginatedRecords = records.slice(offset, offset + page_size);
+    const pageResult = await listMemories(store, { page, pageSize: page_size });
     
     return {
       content: [{
         type: 'text',
-        text: JSON.stringify({
-          memories: paginatedRecords.map((r: any) => ({
-            id: r.record_id,
-            content: r.content,
-            type: r.type,
-            priority: r.priority,
-            scene_name: r.scene_name,
-            session_key: r.session_key,
-            session_id: r.session_id,
-            created_at: r.created_time,
-            updated_at: r.updated_time,
-          })),
-          total,
-          page,
-          page_size,
-          total_pages,
-          has_more: page < total_pages,
-        }),
+        text: JSON.stringify(pageResult),
       }],
     };
   })
@@ -287,9 +314,7 @@ server.tool(
       throw new Error('Vector store not available');
     }
 
-    const records = await store.queryL1Records();
-    const recordMap = new Map<string, any>(records.map((r: any) => [r.record_id, r]));
-    const record = recordMap.get(memory_id);
+    const record = await findMemoryById(store, memory_id);
 
     if (!record) {
       return {
@@ -308,16 +333,7 @@ server.tool(
         type: 'text',
         text: JSON.stringify({
           success: true,
-          id: record.record_id,
-          content: record.content,
-          type: record.type,
-          priority: record.priority,
-          scene_name: record.scene_name,
-          session_key: record.session_key,
-          session_id: record.session_id,
-          created_at: record.created_time,
-          updated_at: record.updated_time,
-          metadata: record.metadata_json ? JSON.parse(record.metadata_json) : {},
+          ...record,
         }),
       }],
     };
@@ -412,14 +428,13 @@ server.tool(
       throw new Error('Vector store not available');
     }
 
-    const success = await store.deleteL1(memory_id);
+    const result = await deleteMemoryById(store, memory_id);
 
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
-          success,
-          id: memory_id,
+          ...result,
         }),
       }],
     };
@@ -463,9 +478,9 @@ server.tool(
       throw new Error('Vector store not available');
     }
     
-    const records = store.queryL1Records();
-    const toDelete = records.filter((r: any) => 
-      r.session_id === entity_id || r.user_id === entity_id
+    const page = await listMemories(store, { page: 1, pageSize: 1000 });
+    const toDelete = page.memories.filter((r: any) => 
+      r.session_id === entity_id || r.session_key?.startsWith(`${entity_id}:`)
     );
     
     if (toDelete.length === 0) {
@@ -482,8 +497,10 @@ server.tool(
     
     let deleted = 0;
     for (const record of toDelete) {
-      store.deleteL1(record.record_id);
-      deleted++;
+      const result = await deleteMemoryById(store, record.id);
+      if (result.success) {
+        deleted++;
+      }
     }
     
     return {
@@ -515,20 +532,21 @@ server.tool(
       throw new Error('Vector store not available');
     }
     
-    const records = store.queryL1Records();
+    const page = await listMemories(store, { page: 1, pageSize: 1000 });
     const entities = new Map();
     
-    for (const record of records) {
-      const recordType = record.user_id ? 'user' : 'agent';
+    for (const record of page.memories) {
+      const [userId, agentId] = record.session_key.split(':');
+      const recordType = userId ? 'user' : 'agent';
       if (entity_type && recordType !== entity_type) continue;
-      
-      const entityId = record.user_id || record.session_id || 'unknown';
+
+      const entityId = userId || agentId || record.session_id || 'unknown';
       const key = `${recordType}:${entityId}`;
       if (!entities.has(key)) {
         entities.set(key, {
           type: recordType,
           id: entityId,
-          created: record.created_time || Date.now(),
+          created: record.created_at || Date.now(),
         });
       }
     }

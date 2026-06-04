@@ -6,7 +6,9 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
+    "test": "npm run test:config && npm run test:mcp-memory-store",
     "test:config": "node --import tsx test/config.test.ts",
+    "test:mcp-memory-store": "node --import tsx test/mcp-memory-store.test.ts",
     "start": "node dist/mcp-server.js",
     "dev": "tsx src/mcp-server.ts"
   },
