@@ -55,6 +55,10 @@ export interface HostAdapter {
   getLLMRunnerFactory(): LLMRunnerFactory;
 }
 
+function logToStderr(message: string): void {
+  process.stderr.write(`[TDAI] ${message}\n`);
+}
+
 export class MemBridgeHostAdapter implements HostAdapter {
   readonly hostType = 'standalone';
   
@@ -74,11 +78,11 @@ export class MemBridgeHostAdapter implements HostAdapter {
     
     this.logger = {
       debug: opts.config.logLevel === 'debug' 
-        ? (msg: string) => console.debug(`[TDAI] ${msg}`) 
+        ? logToStderr
         : undefined,
-      info: (msg: string) => console.info(`[TDAI] ${msg}`),
-      warn: (msg: string) => console.warn(`[TDAI] ${msg}`),
-      error: (msg: string) => console.error(`[TDAI] ${msg}`),
+      info: logToStderr,
+      warn: logToStderr,
+      error: logToStderr,
     };
   }
 

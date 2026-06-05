@@ -6,19 +6,21 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "test": "npm run test:config && npm run test:mcp-memory-store",
+    "test": "npm run test:config && npm run test:mcp-memory-store && npm run test:tdai-adapter && npm run test:embedding-services",
     "test:config": "node --import tsx test/config.test.ts",
     "test:mcp-memory-store": "node --import tsx test/mcp-memory-store.test.ts",
     "start": "node dist/mcp-server.js",
-    "dev": "tsx src/mcp-server.ts"
+    "dev": "tsx src/mcp-server.ts",
+    "test:tdai-adapter": "node --import tsx test/tdai-adapter.test.ts",
+    "test:embedding-services": "node --import tsx test/embedding-services.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "zod": "^3.22.0"
   },
   "devDependencies": {
-    "typescript": "^5.3.0",
+    "@types/node": "^20.0.0",
     "tsx": "^4.7.0",
-    "@types/node": "^20.0.0"
+    "typescript": "^5.3.0"
   }
 }

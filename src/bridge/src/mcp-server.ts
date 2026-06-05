@@ -29,6 +29,7 @@ import {
   listMemories,
   searchConversationMemories,
 } from './mcp-memory-store.js';
+import { resolveEmbeddingConfig } from './embedding-services.js';
 import { MemBridgeHostAdapter } from './tdai-adapter.js';
 
 // Import TdaiCore dynamically at runtime
@@ -40,8 +41,8 @@ const config = loadConfig();
 // Create host adapter
 const adapter = new MemBridgeHostAdapter({ config });
 
-// Default TDAI config (can be overridden via env)
-const tdaiConfig = {
+function createTdaiConfig(embedding: typeof config.embedding) {
+  return {
   storeBackend: 'sqlite',
   recall: {
     enabled: true,
@@ -83,16 +84,16 @@ const tdaiConfig = {
     timeoutMs: config.llm.timeoutMs,
   },
   embedding: {
-    enabled: config.embedding.enabled,
-    provider: config.embedding.provider,
-    baseUrl: config.embedding.baseUrl,
-    apiKey: config.embedding.apiKey,
-    model: config.embedding.model,
-    dimensions: config.embedding.dimensions,
-    sendDimensions: config.embedding.sendDimensions,
-    conflictRecallTopK: config.embedding.conflictRecallTopK,
-    maxInputChars: config.embedding.maxInputChars,
-    timeoutMs: config.embedding.timeoutMs,
+    enabled: embedding.enabled,
+    provider: embedding.provider,
+    baseUrl: embedding.baseUrl,
+    apiKey: embedding.apiKey,
+    model: embedding.model,
+    dimensions: embedding.dimensions,
+    sendDimensions: embedding.sendDimensions,
+    conflictRecallTopK: embedding.conflictRecallTopK,
+    maxInputChars: embedding.maxInputChars,
+    timeoutMs: embedding.timeoutMs,
   },
   bm25: {
     language: 'zh',
@@ -100,7 +101,8 @@ const tdaiConfig = {
   memoryCleanup: {},
   report: {},
   offload: {},
-};
+  };
+}
 
 // TdaiCore instance (initialized lazily)
 let core: any = null;
@@ -118,10 +120,17 @@ async function ensureInitialized(): Promise<void> {
         const tencentdbPath = process.env.TENCENTDB_CORE_PATH || '../../../vendor/tencentdb/src/core/tdai-core.js';
         const tencentdb = await import(tencentdbPath);
         TdaiCore = tencentdb.TdaiCore;
+        const embedding = await resolveEmbeddingConfig(config.embedding, {
+          logger: {
+            info: (message) => console.error(message),
+            warn: (message) => console.error(message),
+            error: (message) => console.error(message),
+          },
+        });
         
         core = new TdaiCore({
           hostAdapter: adapter,
-          config: tdaiConfig,
+          config: createTdaiConfig(embedding),
         });
         
         await core.initialize();
