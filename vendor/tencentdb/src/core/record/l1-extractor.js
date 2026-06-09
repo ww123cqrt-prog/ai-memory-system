@@ -250,14 +250,14 @@ function parseExtractionResult(raw, logger) {
             // [l1-debug] NO_JSON — dump the full raw so we can see what the LLM actually said
             const rawPreview = raw.slice(0, 2048);
             logger?.warn?.(`${TAG} [l1-debug] NO_JSON taskId=l1-extraction, rawLen=${raw.length}, cleanedLen=${cleaned.length}, rawFull=${JSON.stringify(rawPreview)}${raw.length > 2048 ? `…(+${raw.length - 2048})` : ""}`);
-            return [];
+            throw new Error("No JSON array found in extraction response");
         }
         // Sanitize control characters inside JSON string literals that LLM may produce
         const sanitized = sanitizeJsonForParse(arrayMatch[0]);
         const parsed = JSON.parse(sanitized);
         if (!Array.isArray(parsed)) {
             logger?.warn?.(`${TAG} Extraction response is not an array`);
-            return [];
+            throw new Error("Extraction response is not an array");
         }
         const scenes = [];
         for (const item of parsed) {
@@ -284,7 +284,7 @@ function parseExtractionResult(raw, logger) {
     }
     catch (err) {
         logger?.warn?.(`${TAG} Failed to parse extraction result: ${err instanceof Error ? err.message : String(err)}`);
-        return [];
+        throw err;
     }
 }
 // ============================

@@ -374,7 +374,7 @@ function parseExtractionResult(raw: string, logger?: Logger): SceneSegment[] {
       logger?.warn?.(
         `${TAG} [l1-debug] NO_JSON taskId=l1-extraction, rawLen=${raw.length}, cleanedLen=${cleaned.length}, rawFull=${JSON.stringify(rawPreview)}${raw.length > 2048 ? `…(+${raw.length - 2048})` : ""}`,
       );
-      return [];
+      throw new Error("No JSON array found in extraction response");
     }
 
     // Sanitize control characters inside JSON string literals that LLM may produce
@@ -383,7 +383,7 @@ function parseExtractionResult(raw: string, logger?: Logger): SceneSegment[] {
 
     if (!Array.isArray(parsed)) {
       logger?.warn?.(`${TAG} Extraction response is not an array`);
-      return [];
+      throw new Error("Extraction response is not an array");
     }
 
     const scenes: SceneSegment[] = [];
@@ -411,7 +411,7 @@ function parseExtractionResult(raw: string, logger?: Logger): SceneSegment[] {
     return scenes;
   } catch (err) {
     logger?.warn?.(`${TAG} Failed to parse extraction result: ${err instanceof Error ? err.message : String(err)}`);
-    return [];
+    throw err;
   }
 }
 

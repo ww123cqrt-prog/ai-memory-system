@@ -454,7 +454,7 @@ export declare class VectorStore implements IMemoryStore {
      *
      * Used by L1 runner to read L0 data from DB instead of JSONL files.
      */
-    queryL0ForL1(sessionKey: string, afterRecordedAtMs?: number, limit?: number): Array<{
+    queryL0ForL1(sessionKey: string, afterRecordedAtMs?: number, limit?: number, afterRecordId?: string): Array<{
         record_id: string;
         session_key: string;
         session_id: string;
@@ -470,7 +470,7 @@ export declare class VectorStore implements IMemoryStore {
      *
      * Used by L1 runner to replace readConversationMessagesGroupedBySessionId().
      */
-    queryL0GroupedBySessionId(sessionKey: string, afterRecordedAtMs?: number, limit?: number): Array<{
+    queryL0GroupedBySessionId(sessionKey: string, afterRecordedAtMs?: number, limit?: number, afterRecordId?: string): Array<{
         sessionId: string;
         messages: Array<{
             id: string;

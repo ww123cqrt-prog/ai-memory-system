@@ -261,6 +261,22 @@ export declare class MemoryPipelineManager {
      */
     flushSession(sessionKey: string): Promise<void>;
     /**
+     * Replay a session that already has L0 rows persisted in the store.
+     *
+     * This is intentionally different from `notifyConversation()`:
+     * - it does not append or buffer synthetic L0 messages;
+     * - it forces one L1 pass even when the in-memory buffer is empty;
+     * - the L1 runner is expected to read persisted L0 rows using its checkpoint cursor.
+     */
+    replayStoredL0Session(sessionKey: string): Promise<void>;
+    /**
+     * Drain all currently scheduled layer work for one session.
+     *
+     * This flushes L1 for the target session first, then fires that session's
+     * pending L2 timer immediately and waits for L2/L3 queues to become idle.
+     */
+    drainSession(sessionKey: string): Promise<void>;
+    /**
      * Maximum time (ms) to wait for pipeline flush during destroy.
      * Must be shorter than the gateway_stop hook timeout (3 s) to leave
      * headroom for VectorStore / EmbeddingService cleanup that runs after.

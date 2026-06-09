@@ -747,19 +747,19 @@ export class TcvdbMemoryStore {
             return 0;
         }
     }
-    async queryL0ForL1(sessionKey, afterRecordedAtMs, limit = 50) {
+    async queryL0ForL1(sessionKey, afterRecordedAtMs, limit = 50, afterRecordId = "") {
         try {
             await this._ensureInit();
             if (this.degraded)
                 return [];
             const conditions = [`session_key = "${sessionKey}"`];
             if (afterRecordedAtMs && afterRecordedAtMs > 0) {
-                conditions.push(`recorded_at_ms > ${afterRecordedAtMs}`);
+                conditions.push(`recorded_at_ms >= ${afterRecordedAtMs}`);
             }
             const filterExpr = conditions.join(" and ");
-            const docs = await this._queryAllDocs(this.l0Collection, filterExpr, L0_OUTPUT_FIELDS, limit, [{ fieldName: "recorded_at_ms", direction: "desc" }]);
-            // Convert to L0QueryRow and reverse to chronological order (query is DESC, callers expect ASC)
-            const rows = docs.map((doc) => ({
+            const docs = await this._queryAllDocs(this.l0Collection, filterExpr, L0_OUTPUT_FIELDS, undefined, [{ fieldName: "recorded_at_ms", direction: "asc" }]);
+            const rows = docs
+                .map((doc) => ({
                 record_id: String(doc.id ?? ""),
                 session_key: String(doc.session_key ?? ""),
                 session_id: String(doc.session_id ?? ""),
@@ -767,17 +767,30 @@ export class TcvdbMemoryStore {
                 message_text: String(doc.message_text ?? ""),
                 recorded_at: epochMsToIso(Number(doc.recorded_at_ms ?? 0)),
                 timestamp: Number(doc.timestamp ?? 0),
-            }));
-            return rows.reverse();
+            }))
+                .filter((row) => row.role === "user" || row.role === "assistant")
+                .filter((row) => {
+                const recordedAtMs = row.recorded_at ? Date.parse(row.recorded_at) || 0 : 0;
+                if (!afterRecordedAtMs || afterRecordedAtMs <= 0)
+                    return true;
+                return recordedAtMs > afterRecordedAtMs
+                    || (recordedAtMs === afterRecordedAtMs && row.record_id > afterRecordId);
+            });
+            rows.sort((a, b) => {
+                const aMs = a.recorded_at ? Date.parse(a.recorded_at) || 0 : 0;
+                const bMs = b.recorded_at ? Date.parse(b.recorded_at) || 0 : 0;
+                return aMs - bMs || a.record_id.localeCompare(b.record_id);
+            });
+            return rows.slice(0, limit);
         }
         catch (err) {
             this.logger?.warn(`${TAG} [L0-queryForL1] FAILED: ${err instanceof Error ? err.message : String(err)}`);
             return [];
         }
     }
-    async queryL0GroupedBySessionId(sessionKey, afterRecordedAtMs, limit = 50) {
+    async queryL0GroupedBySessionId(sessionKey, afterRecordedAtMs, limit = 50, afterRecordId = "") {
         try {
-            const rows = await this.queryL0ForL1(sessionKey, afterRecordedAtMs, limit);
+            const rows = await this.queryL0ForL1(sessionKey, afterRecordedAtMs, limit, afterRecordId);
             // Group by session_id
             const groupMap = new Map();
             for (const row of rows) {
@@ -799,6 +812,7 @@ export class TcvdbMemoryStore {
             const groups = [];
             for (const [sessionId, messages] of groupMap) {
                 if (messages.length > 0) {
+                    messages.sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id));
                     groups.push({ sessionId, messages });
                 }
             }

@@ -510,21 +510,23 @@ export class VectorStore {
         ORDER BY distance
       `);
         }
-        // L0 query statements for L1 runner (newest-first + LIMIT to bound memory)
+        // L0 query statements for L1 runner (oldest-first + LIMIT to support cursor replay)
         // Sort/filter by recorded_at (write time) instead of timestamp (conversation time)
         // because L1 cursor uses recorded_at semantics. ISO 8601 string comparison preserves time order.
         this.stmtL0QueryAll = this.db.prepare(`
       SELECT record_id, session_key, session_id, role, message_text, recorded_at, timestamp
       FROM l0_conversations
-      WHERE session_key = ?
-      ORDER BY recorded_at DESC
+      WHERE session_key = ? AND role IN ('user', 'assistant')
+      ORDER BY recorded_at ASC, record_id ASC
       LIMIT ?
     `);
         this.stmtL0QueryAfter = this.db.prepare(`
       SELECT record_id, session_key, session_id, role, message_text, recorded_at, timestamp
       FROM l0_conversations
-      WHERE session_key = ? AND recorded_at > ?
-      ORDER BY recorded_at DESC
+      WHERE session_key = ?
+        AND role IN ('user', 'assistant')
+        AND (recorded_at > ? OR (recorded_at = ? AND record_id > ?))
+      ORDER BY recorded_at ASC, record_id ASC
       LIMIT ?
     `);
         this.stmtL0QueryMigrationCursor = this.db.prepare(`
@@ -1498,25 +1500,25 @@ export class VectorStore {
      *
      * Used by L1 runner to read L0 data from DB instead of JSONL files.
      */
-    queryL0ForL1(sessionKey, afterRecordedAtMs, limit = 50) {
+    queryL0ForL1(sessionKey, afterRecordedAtMs, limit = 50, afterRecordId = "") {
         if (this.degraded) {
             this.logger?.warn(`${TAG} [L0-query] SKIPPED (degraded mode)`);
             return [];
         }
         try {
-            // Query newest-first (DESC) with LIMIT, then reverse to chronological order
+            // Query oldest-first with LIMIT so the recorded_at cursor can advance
+            // through historical backfill without skipping older messages.
             let rows;
             if (afterRecordedAtMs && afterRecordedAtMs > 0) {
                 // Convert epoch ms to ISO string for recorded_at comparison
                 const afterRecordedAtIso = new Date(afterRecordedAtMs).toISOString();
-                rows = this.stmtL0QueryAfter.all(sessionKey, afterRecordedAtIso, limit);
+                rows = this.stmtL0QueryAfter.all(sessionKey, afterRecordedAtIso, afterRecordedAtIso, afterRecordId, limit);
             }
             else {
                 rows = this.stmtL0QueryAll.all(sessionKey, limit);
             }
             this.logger?.info(`${TAG} [L0-query] session=${sessionKey}, afterRecordedAtMs=${afterRecordedAtMs ?? "(all)"}, ` +
-                `limit=${limit}, returned ${rows.length} row(s)`);
-            // Reverse: SQL returns newest-first (DESC), callers expect chronological order
+                `afterRecordId=${afterRecordId || "(none)"}, limit=${limit}, returned ${rows.length} row(s)`);
             return rows.map((r) => ({
                 record_id: r.record_id,
                 session_key: r.session_key,
@@ -1525,7 +1527,7 @@ export class VectorStore {
                 message_text: r.message_text,
                 recorded_at: r.recorded_at || "",
                 timestamp: r.timestamp || 0,
-            })).reverse();
+            }));
         }
         catch (err) {
             this.logger?.warn(`${TAG} [L0-query] FAILED (non-fatal, returning empty): ${err instanceof Error ? err.message : String(err)}`);
@@ -1539,13 +1541,13 @@ export class VectorStore {
      *
      * Used by L1 runner to replace readConversationMessagesGroupedBySessionId().
      */
-    queryL0GroupedBySessionId(sessionKey, afterRecordedAtMs, limit = 50) {
+    queryL0GroupedBySessionId(sessionKey, afterRecordedAtMs, limit = 50, afterRecordId = "") {
         if (this.degraded) {
             this.logger?.warn(`${TAG} [L0-query-grouped] SKIPPED (degraded mode)`);
             return [];
         }
         try {
-            const rows = this.queryL0ForL1(sessionKey, afterRecordedAtMs, limit);
+            const rows = this.queryL0ForL1(sessionKey, afterRecordedAtMs, limit, afterRecordId);
             // Group by session_id
             const groupMap = new Map();
             for (const row of rows) {
@@ -1567,12 +1569,13 @@ export class VectorStore {
             const groups = [];
             for (const [sessionId, messages] of groupMap) {
                 if (messages.length > 0) {
+                    messages.sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id));
                     groups.push({ sessionId, messages });
                 }
             }
             groups.sort((a, b) => a.messages[0].timestamp - b.messages[0].timestamp);
             this.logger?.info(`${TAG} [L0-query-grouped] session=${sessionKey}, afterRecordedAtMs=${afterRecordedAtMs ?? "(all)"}, ` +
-                `${rows.length} messages across ${groups.length} group(s)`);
+                `afterRecordId=${afterRecordId || "(none)"}, ${rows.length} messages across ${groups.length} group(s)`);
             return groups;
         }
         catch (err) {

@@ -13,6 +13,21 @@ import { BackupManager } from "../../utils/backup.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
 import { report } from "../report/reporter.js";
 const TAG = "[memory-tdai] [persona]";
+function supportsFileTools(runner) {
+    return runner.supportsFileTools !== false;
+}
+function readPositiveIntegerEnv(name, fallback) {
+    const raw = process.env[name];
+    if (!raw)
+        return fallback;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+function stripMarkdownFence(text) {
+    const trimmed = text.trim();
+    const match = trimmed.match(/^```(?:markdown|md)?\s*([\s\S]*?)\s*```$/i);
+    return (match?.[1] ?? trimmed).trim();
+}
 export class PersonaGenerator {
     dataDir;
     runner;
@@ -114,17 +129,41 @@ export class PersonaGenerator {
         // 7. Backup before LLM run (LLM writes persona.md via tools)
         const bm = new BackupManager(path.join(this.dataDir, ".backup"));
         await bm.backupFile(personaPath, "persona", `offset${cp.total_processed}`, this.backupCount);
-        // 8. Run LLM agent (sandboxed to dataDir, tools enabled — LLM writes persona.md directly)
+        // 8. Run LLM agent. Tool-capable runners write persona.md directly.
+        // Plain chat-completion runners return Markdown and the engineering side
+        // writes persona.md below.
+        let directPersonaText;
         try {
-            this.logger?.debug?.(`${TAG} Calling LLM for persona generation (timeout=180s, tools=enabled, workspaceDir=${this.dataDir})...`);
-            await this.runner.run({
-                systemPrompt,
-                prompt: userPrompt,
-                taskId: "persona-generation",
-                timeoutMs: 180_000,
-                // maxTokens omitted → core uses the resolved model's maxTokens from catalog
-                workspaceDir: this.dataDir,
-            });
+            const runnerSupportsFileTools = supportsFileTools(this.runner);
+            this.logger?.debug?.(`${TAG} Calling LLM for persona generation (timeout=180s, fileTools=${runnerSupportsFileTools}, workspaceDir=${this.dataDir})...`);
+            if (runnerSupportsFileTools) {
+                await this.runner.run({
+                    systemPrompt,
+                    prompt: userPrompt,
+                    taskId: "persona-generation",
+                    timeoutMs: 180_000,
+                    // maxTokens omitted → core uses the resolved model's maxTokens from catalog
+                    workspaceDir: this.dataDir,
+                });
+            }
+            else {
+                const fallbackPrompt = `${userPrompt}\n\n` +
+                    `---\n\n` +
+                    `You do not have file tools. Return only the final persona.md Markdown body. ` +
+                    `Do not include analysis, JSON, tool calls, or scene navigation.`;
+                directPersonaText = stripMarkdownFence(await this.runner.run({
+                    systemPrompt: "You generate concise user persona Markdown from scene memory evidence. Return only the final persona.md body.",
+                    prompt: fallbackPrompt,
+                    taskId: "persona-generation-markdown",
+                    timeoutMs: 180_000,
+                    maxTokens: readPositiveIntegerEnv("MEMORY_L3_MAX_TOKENS", 2048),
+                }) ?? "");
+                if (!directPersonaText) {
+                    this.logger?.error(`${TAG} LLM returned empty persona markdown`);
+                    return false;
+                }
+                await fs.writeFile(personaPath, directPersonaText, "utf-8");
+            }
             this.logger?.debug?.(`${TAG} LLM runner completed`);
         }
         catch (err) {

@@ -227,8 +227,8 @@ export interface IMemoryStore {
     deleteL0(recordId: string): MaybePromise<boolean>;
     deleteL0Expired(cutoffIso: string): MaybePromise<number>;
     countL0(): MaybePromise<number>;
-    queryL0ForL1(sessionKey: string, afterRecordedAtMs?: number, limit?: number): MaybePromise<L0QueryRow[]>;
-    queryL0GroupedBySessionId(sessionKey: string, afterRecordedAtMs?: number, limit?: number): MaybePromise<L0SessionGroup[]>;
+    queryL0ForL1(sessionKey: string, afterRecordedAtMs?: number, limit?: number, afterRecordId?: string): MaybePromise<L0QueryRow[]>;
+    queryL0GroupedBySessionId(sessionKey: string, afterRecordedAtMs?: number, limit?: number, afterRecordId?: string): MaybePromise<L0SessionGroup[]>;
     getAllL0Texts(): MaybePromise<Array<{
         record_id: string;
         message_text: string;

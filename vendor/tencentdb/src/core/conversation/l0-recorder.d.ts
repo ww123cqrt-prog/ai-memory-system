@@ -94,8 +94,7 @@ export declare function readConversationRecords(sessionKey: string, baseDir: str
  * Read L0 messages across all conversation records for a session,
  * optionally filtered by a cursor timestamp (messages after the cursor).
  *
- * When `limit` is provided, only the **newest** `limit` messages are returned
- * (matching the DB path's `ORDER BY timestamp DESC LIMIT ?` behavior).
+ * When `limit` is provided, the oldest messages after the cursor are returned.
  * Returned messages are always in chronological order (oldest → newest).
  *
  * NOTE: potential optimization — records are chronologically ordered (append-only JSONL),
@@ -119,15 +118,16 @@ export interface SessionIdMessageGroup {
  * instances (e.g. after /reset). L1 extraction should process each group independently
  * so that each group's sessionId is correctly associated with its extracted memories.
  *
- * When `limit` is provided, only the **newest** `limit` messages (across all groups)
- * are retained — matching the DB path's `ORDER BY recorded_at DESC LIMIT ?` behavior.
+ * When `limit` is provided, the oldest messages after the cursor are retained
+ * so incremental L1 replay can advance without skipping history.
  * Groups that become empty after truncation are dropped.
  *
  * Groups are returned in chronological order (by earliest message timestamp).
  * Messages within each group are also in chronological order.
  *
- * @param afterRecordedAtMs - Epoch ms cursor: only messages with recordedAt > this are included.
+ * @param afterRecordedAtMs - Epoch ms cursor: only messages after this L0 write time are included.
+ * @param afterRecordId - Tie-breaker for rows sharing the same recordedAt value.
  */
-export declare function readConversationMessagesGroupedBySessionId(sessionKey: string, baseDir: string, afterRecordedAtMs?: number, logger?: Logger, limit?: number): Promise<SessionIdMessageGroup[]>;
+export declare function readConversationMessagesGroupedBySessionId(sessionKey: string, baseDir: string, afterRecordedAtMs?: number, logger?: Logger, limit?: number, afterRecordId?: string): Promise<SessionIdMessageGroup[]>;
 export {};
 //# sourceMappingURL=l0-recorder.d.ts.map

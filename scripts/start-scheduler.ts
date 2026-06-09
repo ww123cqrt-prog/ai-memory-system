@@ -15,6 +15,7 @@ import { OpenCodeSource } from '../src/sources/opencode-source.js';
 import { ClaudeSource } from '../src/sources/claude-source.js';
 import { CodexSource } from '../src/sources/codex-source.js';
 import { dailySummaryTask } from '../tasks/daily-summary.js';
+import { layeredMemoryProcessingTask } from '../tasks/layered-memory-processing.js';
 import { projectCheckerTask } from '../tasks/project-checker.js';
 
 async function main() {
@@ -54,6 +55,8 @@ async function main() {
         saveToMemory: true,
       });
       console.log('[scheduler] Daily summary result:\n', result);
+      const layeredResult = await layeredMemoryProcessingTask({ mode: 'incremental' });
+      console.log('[scheduler] layered-memory-processing complete:', layeredResult);
     },
     enabled: true,
     retryOnFail: true,
@@ -62,6 +65,19 @@ async function main() {
   });
 
   // Register task: project checker (placeholder)
+  scheduler.register({
+    name: 'layered-memory-backfill',
+    cron: '30 3 * * *',
+    handler: async () => {
+      const result = await layeredMemoryProcessingTask({ mode: 'backfill' });
+      console.log('[scheduler] layered-memory-backfill complete:', result);
+    },
+    enabled: false,
+    retryOnFail: false,
+    maxRetries: 0,
+    description: '手动/一次性补跑历史 L0 到 L1/L2/L3',
+  });
+
   scheduler.register({
     name: 'project-checker',
     cron: '0 22 * * 5',

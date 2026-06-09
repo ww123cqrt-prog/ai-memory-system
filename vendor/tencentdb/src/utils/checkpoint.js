@@ -29,6 +29,7 @@ import { randomBytes } from "node:crypto";
 const DEFAULT_RUNNER_STATE = {
     last_captured_timestamp: 0,
     last_l1_cursor: 0,
+    last_l1_record_id: "",
     last_scene_name: "",
 };
 const DEFAULT_PIPELINE_STATE = {
@@ -113,6 +114,7 @@ export class CheckpointManager {
                         ...DEFAULT_RUNNER_STATE,
                         last_captured_timestamp: state.last_captured_timestamp ?? 0,
                         last_l1_cursor: state.last_l1_cursor ?? 0,
+                        last_l1_record_id: state.last_l1_record_id ?? "",
                         last_scene_name: state.last_scene_name ?? "",
                     };
                     cp.pipeline_states[key] = {
@@ -292,11 +294,14 @@ export class CheckpointManager {
      * @param cursorRecordedAtMs - The max recorded_at epoch ms of processed L0 messages.
      *   This becomes the new `last_l1_cursor` value (recorded_at semantics, not conversation timestamp).
      */
-    async markL1ExtractionComplete(sessionKey, memoriesExtracted, cursorRecordedAtMs, lastSceneName) {
+    async markL1ExtractionComplete(sessionKey, memoriesExtracted, cursorRecordedAtMs, cursorRecordId, lastSceneName) {
         await this.mutate((cp) => {
             const state = this.getRunnerState(cp, sessionKey);
             if (cursorRecordedAtMs) {
                 state.last_l1_cursor = cursorRecordedAtMs;
+            }
+            if (cursorRecordId !== undefined) {
+                state.last_l1_record_id = cursorRecordId;
             }
             if (lastSceneName !== undefined) {
                 state.last_scene_name = lastSceneName;
@@ -306,6 +311,7 @@ export class CheckpointManager {
         });
         this.logger.info(`[checkpoint] markL1ExtractionComplete session=${sessionKey}: ` +
             `extracted=${memoriesExtracted}, cursor=${cursorRecordedAtMs ?? "(unchanged)"}, ` +
+            `cursorRecordId=${cursorRecordId ?? "(unchanged)"}, ` +
             `lastScene="${lastSceneName ?? "(unchanged)"}"`);
     }
     // ============================

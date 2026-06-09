@@ -293,6 +293,24 @@ export class TdaiCore {
             return;
         await this.scheduler.flushSession(sessionKey);
     }
+    /**
+     * Trigger L1/L2/L3 processing for a session whose L0 rows already exist.
+     *
+     * This is used by scheduler/backfill jobs that ingest raw conversations
+     * directly into the L0 store. It deliberately does not call auto-capture and
+     * does not write marker messages; the L1 runner reads persisted L0 rows using
+     * its normal checkpoint cursor.
+     */
+    async processStoredL0Session(sessionKey) {
+        if (!sessionKey)
+            return;
+        await this.storeReady?.catch(() => { });
+        if (!this.scheduler)
+            return;
+        await this.ensureSchedulerStarted();
+        await this.scheduler.replayStoredL0Session(sessionKey);
+        await this.scheduler.drainSession(sessionKey);
+    }
     // ============================
     // Accessors (for migration bridge)
     // ============================

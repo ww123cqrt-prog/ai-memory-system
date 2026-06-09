@@ -47,6 +47,8 @@ export interface RunnerSessionState {
   // ═══ L1 — cursor & continuity ═══
   /** L0 JSONL cursor: epoch ms of last message processed by L1 */
   last_l1_cursor: number;
+  /** Tie-breaker for L1 cursor when multiple L0 rows share the same recorded_at. */
+  last_l1_record_id: string;
   /** Last scene name from the most recent L1 extraction (for cross-batch continuity) */
   last_scene_name: string;
 }
@@ -111,6 +113,7 @@ export interface Checkpoint {
 const DEFAULT_RUNNER_STATE: RunnerSessionState = {
   last_captured_timestamp: 0,
   last_l1_cursor: 0,
+  last_l1_record_id: "",
   last_scene_name: "",
 };
 
@@ -211,6 +214,7 @@ export class CheckpointManager {
             ...DEFAULT_RUNNER_STATE,
             last_captured_timestamp: (state.last_captured_timestamp as number) ?? 0,
             last_l1_cursor: (state.last_l1_cursor as number) ?? 0,
+            last_l1_record_id: (state.last_l1_record_id as string) ?? "",
             last_scene_name: (state.last_scene_name as string) ?? "",
           };
           cp.pipeline_states[key] = {
@@ -411,12 +415,16 @@ export class CheckpointManager {
     sessionKey: string,
     memoriesExtracted: number,
     cursorRecordedAtMs?: number,
+    cursorRecordId?: string,
     lastSceneName?: string,
   ): Promise<void> {
     await this.mutate((cp) => {
       const state = this.getRunnerState(cp, sessionKey);
       if (cursorRecordedAtMs) {
         state.last_l1_cursor = cursorRecordedAtMs;
+      }
+      if (cursorRecordId !== undefined) {
+        state.last_l1_record_id = cursorRecordId;
       }
       if (lastSceneName !== undefined) {
         state.last_scene_name = lastSceneName;
@@ -427,6 +435,7 @@ export class CheckpointManager {
     this.logger.info(
       `[checkpoint] markL1ExtractionComplete session=${sessionKey}: ` +
       `extracted=${memoriesExtracted}, cursor=${cursorRecordedAtMs ?? "(unchanged)"}, ` +
+      `cursorRecordId=${cursorRecordId ?? "(unchanged)"}, ` +
       `lastScene="${lastSceneName ?? "(unchanged)"}"`,
     );
   }

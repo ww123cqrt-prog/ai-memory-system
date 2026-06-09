@@ -505,6 +505,55 @@ export class MemoryPipelineManager {
   }
 
   /**
+   * Replay a session that already has L0 rows persisted in the store.
+   *
+   * This is intentionally different from `notifyConversation()`:
+   * - it does not append or buffer synthetic L0 messages;
+   * - it forces one L1 pass even when the in-memory buffer is empty;
+   * - the L1 runner is expected to read persisted L0 rows using its checkpoint cursor.
+   */
+  async replayStoredL0Session(sessionKey: string): Promise<void> {
+    if (this.destroyed) return;
+    if (this.sessionFilter.shouldSkip(sessionKey)) return;
+
+    const state = this.getOrCreateState(sessionKey);
+    state.conversation_count += 1;
+    state.last_active_time = Date.now();
+
+    const timers = this.getOrCreateTimers(sessionKey);
+    timers.l1RetryCount = 0;
+    timers.l1Idle.cancel();
+
+    await this.persistStates();
+    this.enqueueL1(sessionKey, "replay");
+    await this.l1Queue.onIdle();
+  }
+
+  /**
+   * Drain all currently scheduled layer work for one session.
+   *
+   * This flushes L1 for the target session first, then fires that session's
+   * pending L2 timer immediately and waits for L2/L3 queues to become idle.
+   */
+  async drainSession(sessionKey: string): Promise<void> {
+    if (this.destroyed) return;
+    if (this.sessionFilter.shouldSkip(sessionKey)) return;
+
+    await this.flushSession(sessionKey);
+
+    const timers = this.sessionTimers.get(sessionKey);
+    if (timers?.l2Schedule.pending) {
+      this.logger?.debug?.(`${TAG} [${sessionKey}] drainSession: flushing L2 schedule`);
+      timers.l2Schedule.flush();
+    }
+
+    await this.l2Queue.onIdle();
+    await this.l3Queue.onIdle();
+
+    this.logger?.debug?.(`${TAG} [${sessionKey}] drainSession: complete`);
+  }
+
+  /**
    * Maximum time (ms) to wait for pipeline flush during destroy.
    * Must be shorter than the gateway_stop hook timeout (3 s) to leave
    * headroom for VectorStore / EmbeddingService cleanup that runs after.
@@ -620,7 +669,7 @@ export class MemoryPipelineManager {
   // Internal: L1 queue
   // ============================
 
-  private enqueueL1(sessionKey: string, triggerReason: "threshold" | "idle_timeout" | "flush" = "threshold"): void {
+  private enqueueL1(sessionKey: string, triggerReason: "threshold" | "idle_timeout" | "flush" | "replay" = "threshold"): void {
     const timers = this.getOrCreateTimers(sessionKey);
 
     // Don't double-queue
@@ -919,6 +968,7 @@ export class MemoryPipelineManager {
       );
       this.armL2MaxInterval(sessionKey);
       await this.persistStates();
+      this.triggerL3();
       return;
     }
 

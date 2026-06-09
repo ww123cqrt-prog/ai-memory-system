@@ -23,9 +23,9 @@ import { CheckpointManager } from "../../utils/checkpoint.js";
 import { BackupManager } from "../../utils/backup.js";
 import { readSceneIndex, syncSceneIndex } from "../scene/scene-index.js";
 import type { SceneIndexEntry } from "../scene/scene-index.js";
-import { parseSceneBlock } from "../scene/scene-format.js";
+import { formatSceneBlock, parseSceneBlock } from "../scene/scene-format.js";
 import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
-import { normalizeSceneFilenames } from "./filename-normalizer.js";
+import { normalizeSceneFilename, normalizeSceneFilenames } from "./filename-normalizer.js";
 import { buildSceneExtractionPrompt } from "../prompts/scene-extraction.js";
 import { report } from "../report/reporter.js";
 import type { LLMRunner } from "../types.js";
@@ -61,6 +61,107 @@ export interface SceneExtractorOptions {
    * Must be configured with `enableTools: true`.
    */
   llmRunner?: LLMRunner;
+}
+
+interface StructuredSceneOutput {
+  scenes: StructuredSceneFile[];
+  personaUpdateReason?: string;
+}
+
+interface StructuredSceneFile {
+  filename: string;
+  summary?: string;
+  heat?: number;
+  created?: string;
+  updated?: string;
+  content: string;
+  delete?: boolean;
+}
+
+function supportsFileTools(runner: LLMRunner): boolean {
+  return runner.supportsFileTools !== false;
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function findJsonPayload(raw: string): unknown {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const text = (fenced?.[1] ?? raw).trim();
+  const objectStart = text.indexOf("{");
+  const arrayStart = text.indexOf("[");
+  const starts = [objectStart, arrayStart].filter((idx) => idx >= 0);
+  if (starts.length === 0) {
+    throw new Error("No JSON object or array found in scene extraction response");
+  }
+
+  const start = Math.min(...starts);
+  const end = text.lastIndexOf(text[start] === "[" ? "]" : "}");
+  if (end <= start) {
+    throw new Error("Incomplete JSON in scene extraction response");
+  }
+
+  return JSON.parse(text.slice(start, end + 1));
+}
+
+function parseStructuredSceneOutput(raw: string): StructuredSceneOutput {
+  const parsed = findJsonPayload(raw);
+  const root = Array.isArray(parsed)
+    ? { scenes: parsed }
+    : parsed;
+  if (!root || typeof root !== "object") {
+    throw new Error("Scene extraction response must be a JSON object or array");
+  }
+
+  const obj = root as Record<string, unknown>;
+  const scenesRaw = Array.isArray(obj.scenes)
+    ? obj.scenes
+    : Array.isArray(obj.files)
+      ? obj.files
+      : undefined;
+  if (!scenesRaw) {
+    throw new Error("Scene extraction response missing scenes array");
+  }
+
+  const scenes: StructuredSceneFile[] = [];
+  for (const item of scenesRaw) {
+    if (!item || typeof item !== "object") continue;
+    const scene = item as Record<string, unknown>;
+    const filename = typeof scene.filename === "string"
+      ? scene.filename
+      : typeof scene.path === "string"
+        ? scene.path
+        : "";
+    const content = typeof scene.content === "string"
+      ? scene.content
+      : typeof scene.markdown === "string"
+        ? scene.markdown
+        : "";
+    if (!filename || (!content && scene.delete !== true)) continue;
+    scenes.push({
+      filename,
+      content,
+      summary: typeof scene.summary === "string" ? scene.summary : undefined,
+      heat: typeof scene.heat === "number" ? scene.heat : undefined,
+      created: typeof scene.created === "string" ? scene.created : undefined,
+      updated: typeof scene.updated === "string" ? scene.updated : undefined,
+      delete: scene.delete === true,
+    });
+  }
+
+  return {
+    scenes,
+    personaUpdateReason:
+      typeof obj.persona_update_reason === "string"
+        ? obj.persona_update_reason
+        : typeof obj.personaUpdateReason === "string"
+          ? obj.personaUpdateReason
+          : undefined,
+  };
 }
 
 /**
@@ -203,20 +304,45 @@ export class SceneExtractor {
     });
     this.logger?.debug?.(`${TAG} extract() prompt built: ${userPrompt.length} chars (${Date.now() - promptStartMs}ms)`);
 
-    // Phase 4: Run LLM agent (sandboxed to scene_blocks/)
+    // Phase 4: Run LLM agent.
+    //
+    // OpenClaw/CleanContext runners can write scene files through sandboxed
+    // file tools. Plain OpenAI-compatible chat runners (LM Studio/Ollama-style)
+    // cannot, so ask for structured JSON and apply the filesystem writes here.
     let llmOutput = "";
     let llmDurationMs = 0;
+    let structuredFallbackWrites: number | undefined;
     try {
-      this.logger?.debug?.(`${TAG} extract() starting LLM runner (timeout=${this.timeoutMs}ms, maxTokens=model default)...`);
+      const runnerSupportsFileTools = supportsFileTools(this.runner);
+      this.logger?.debug?.(`${TAG} extract() starting LLM runner (timeout=${this.timeoutMs}ms, maxTokens=model default, fileTools=${runnerSupportsFileTools})...`);
       const runnerStartMs = Date.now();
-      llmOutput = await this.runner.run({
-        systemPrompt,
-        prompt: userPrompt,
-        taskId: `scene-extract-${Date.now()}`,
-        timeoutMs: this.timeoutMs,
-        // maxTokens omitted → core uses the resolved model's maxTokens from catalog
-        workspaceDir: sceneBlocksDir,
-      }) ?? "";
+      if (runnerSupportsFileTools) {
+        llmOutput = await this.runner.run({
+          systemPrompt,
+          prompt: userPrompt,
+          taskId: `scene-extract-${Date.now()}`,
+          timeoutMs: this.timeoutMs,
+          // maxTokens omitted → core uses the resolved model's maxTokens from catalog
+          workspaceDir: sceneBlocksDir,
+        }) ?? "";
+      } else {
+        const structuredPrompt = this.buildStructuredFallbackPrompt({
+          memoriesJson,
+          sceneSummaries: sceneSummaries || "(无已有场景)",
+          currentTimestamp,
+          sceneCountWarning,
+          existingSceneFiles,
+        });
+        llmOutput = await this.runner.run({
+          systemPrompt:
+            "You consolidate user memories into scene markdown files. Respond only with strict JSON.",
+          prompt: structuredPrompt,
+          taskId: `scene-extract-json-${Date.now()}`,
+          timeoutMs: this.timeoutMs,
+          maxTokens: readPositiveIntegerEnv("MEMORY_L2_MAX_TOKENS", 2048),
+        }) ?? "";
+        structuredFallbackWrites = await this.applyStructuredFallbackOutput(llmOutput, sceneBlocksDir, currentTimestamp);
+      }
       llmDurationMs = Date.now() - runnerStartMs;
       this.logger?.debug?.(`${TAG} extract() LLM runner completed: ${llmDurationMs}ms`);
     } catch (err) {
@@ -333,6 +459,12 @@ export class SceneExtractor {
     }
 
     const totalMs = Date.now() - extractStartMs;
+    if (structuredFallbackWrites !== undefined && structuredFallbackWrites <= 0) {
+      const message = "structured fallback produced no scene files";
+      this.logger?.warn(`${TAG} extract() ${message}; L2 cursor will not advance`);
+      return { memoriesProcessed: 0, success: false, error: message };
+    }
+
     this.logger?.info(`${TAG} extract() completed: ${memories.length} memories processed in ${totalMs}ms`);
 
     // ── l2_extraction metric ──
@@ -433,6 +565,94 @@ export class SceneExtractor {
       lines.push("");
     }
     return { summaries: lines.join("\n"), filenames };
+  }
+
+  private buildStructuredFallbackPrompt(params: {
+    memoriesJson: string;
+    sceneSummaries: string;
+    currentTimestamp: string;
+    sceneCountWarning?: string;
+    existingSceneFiles: string[];
+  }): string {
+    const fileList = params.existingSceneFiles.length > 0
+      ? params.existingSceneFiles.map((f) => `- ${f}`).join("\n")
+      : "(none)";
+
+    return `You are updating long-term memory scene blocks, but you do not have file tools.
+Return strict JSON only. Do not wrap it in markdown.
+
+Output schema:
+{
+  "scenes": [
+    {
+      "filename": "normalized-file-name.md",
+      "summary": "30-40 word concise summary",
+      "heat": 1,
+      "content": "Markdown body without META block"
+    }
+  ],
+  "persona_update_reason": ""
+}
+
+Rules:
+- Write at most 1 scene unless updating an existing scene from the file list.
+- Prefer updating an existing scene when it is related.
+- Filenames must end with .md and use only letters, numbers, CJK, hyphen, underscore, and dot.
+- Content must be narrative and concise. Do not output a simple list of raw memories.
+- Content should include useful sections such as 用户基础信息, 用户核心特征, 用户偏好, 隐性信号, 核心叙事, 演变轨迹, 待确认/矛盾点 when applicable.
+- Keep each scene content under 1500 Chinese characters or 1200 English words.
+- If no meaningful scene can be produced, return {"scenes":[]}.
+
+Current timestamp: ${params.currentTimestamp}
+Scene warning: ${params.sceneCountWarning || "(none)"}
+
+Existing scene files:
+${fileList}
+
+Existing scene summaries:
+${params.sceneSummaries}
+
+New memories:
+${params.memoriesJson}`;
+  }
+
+  private async applyStructuredFallbackOutput(
+    rawOutput: string,
+    sceneBlocksDir: string,
+    currentTimestamp: string,
+  ): Promise<number> {
+    const structured = parseStructuredSceneOutput(rawOutput);
+    if (structured.personaUpdateReason) {
+      const cpManager = new CheckpointManager(this.dataDir);
+      await cpManager.setPersonaUpdateRequest(structured.personaUpdateReason);
+    }
+
+    let written = 0;
+    for (const scene of structured.scenes) {
+      const filename = normalizeSceneFilename(scene.filename);
+      const targetPath = path.join(sceneBlocksDir, filename);
+
+      if (scene.delete) {
+        await fs.writeFile(targetPath, "[DELETED]", "utf-8");
+        continue;
+      }
+
+      const content = scene.content.trim();
+      if (!content) continue;
+
+      const rawScene = formatSceneBlock({
+        created: scene.created || currentTimestamp,
+        updated: scene.updated || currentTimestamp,
+        summary: scene.summary || content.replace(/\s+/g, " ").slice(0, 160),
+        heat: Number.isFinite(scene.heat) && scene.heat! > 0 ? scene.heat! : 1,
+      }, content);
+
+      await fs.writeFile(targetPath, rawScene, "utf-8");
+      written++;
+    }
+
+    this.logger?.debug?.(`${TAG} extract() structured fallback wrote ${written} scene file(s)`);
+    return written;
   }
 
   /**

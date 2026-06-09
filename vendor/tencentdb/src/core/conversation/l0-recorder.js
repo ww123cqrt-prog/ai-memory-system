@@ -285,8 +285,7 @@ export async function readConversationRecords(sessionKey, baseDir, logger) {
  * Read L0 messages across all conversation records for a session,
  * optionally filtered by a cursor timestamp (messages after the cursor).
  *
- * When `limit` is provided, only the **newest** `limit` messages are returned
- * (matching the DB path's `ORDER BY timestamp DESC LIMIT ?` behavior).
+ * When `limit` is provided, the oldest messages after the cursor are returned.
  * Returned messages are always in chronological order (oldest → newest).
  *
  * NOTE: potential optimization — records are chronologically ordered (append-only JSONL),
@@ -303,10 +302,10 @@ export async function readConversationMessages(sessionKey, baseDir, afterTimesta
             allMessages.push(msg);
         }
     }
-    // Truncate to newest `limit` messages (keep tail, since array is chronological)
+    // Keep the oldest page after the cursor so L1 cursor replay can progress.
     if (limit != null && limit > 0 && allMessages.length > limit) {
-        logger?.debug?.(`${TAG} readConversationMessages: truncating ${allMessages.length} → ${limit} (newest)`);
-        return allMessages.slice(-limit);
+        logger?.debug?.(`${TAG} readConversationMessages: truncating ${allMessages.length} → ${limit} (oldest page)`);
+        return allMessages.slice(0, limit);
     }
     return allMessages;
 }
@@ -317,36 +316,41 @@ export async function readConversationMessages(sessionKey, baseDir, afterTimesta
  * instances (e.g. after /reset). L1 extraction should process each group independently
  * so that each group's sessionId is correctly associated with its extracted memories.
  *
- * When `limit` is provided, only the **newest** `limit` messages (across all groups)
- * are retained — matching the DB path's `ORDER BY recorded_at DESC LIMIT ?` behavior.
+ * When `limit` is provided, the oldest messages after the cursor are retained
+ * so incremental L1 replay can advance without skipping history.
  * Groups that become empty after truncation are dropped.
  *
  * Groups are returned in chronological order (by earliest message timestamp).
  * Messages within each group are also in chronological order.
  *
- * @param afterRecordedAtMs - Epoch ms cursor: only messages with recordedAt > this are included.
+ * @param afterRecordedAtMs - Epoch ms cursor: only messages after this L0 write time are included.
+ * @param afterRecordId - Tie-breaker for rows sharing the same recordedAt value.
  */
-export async function readConversationMessagesGroupedBySessionId(sessionKey, baseDir, afterRecordedAtMs, logger, limit) {
+export async function readConversationMessagesGroupedBySessionId(sessionKey, baseDir, afterRecordedAtMs, logger, limit, afterRecordId = "") {
     const records = await readConversationRecords(sessionKey, baseDir, logger);
     // Collect all messages with their sessionId, filtering by recorded_at cursor
     const allMessages = [];
     for (const record of records) {
         const sid = record.sessionId || "";
         const recMs = Date.parse(record.recordedAt) || 0;
-        if (afterRecordedAtMs && recMs <= afterRecordedAtMs)
-            continue;
         for (const msg of record.messages) {
+            if (afterRecordedAtMs &&
+                (recMs < afterRecordedAtMs || (recMs === afterRecordedAtMs && msg.id <= afterRecordId))) {
+                continue;
+            }
             allMessages.push({ sessionId: sid, msg: { ...msg, recordedAtMs: recMs } });
         }
     }
-    // Sort by timestamp ASC (chronological) — records are already roughly ordered
-    // by recordedAt, but messages within may not be perfectly sorted by timestamp.
-    allMessages.sort((a, b) => a.msg.timestamp - b.msg.timestamp);
-    // Truncate to newest `limit` messages (keep tail)
+    // Page by the same tuple the L1 cursor stores. Sorting by conversation
+    // timestamp here could jump the recorded_at cursor forward and skip older
+    // write-time rows that happen to contain old message timestamps.
+    allMessages.sort((a, b) => (a.msg.recordedAtMs - b.msg.recordedAtMs ||
+        a.msg.id.localeCompare(b.msg.id)));
+    // Truncate to the oldest page after the cursor.
     let selected = allMessages;
     if (limit != null && limit > 0 && allMessages.length > limit) {
-        logger?.debug?.(`${TAG} readConversationMessagesGroupedBySessionId: truncating ${allMessages.length} → ${limit} (newest)`);
-        selected = allMessages.slice(-limit);
+        logger?.debug?.(`${TAG} readConversationMessagesGroupedBySessionId: truncating ${allMessages.length} → ${limit} (oldest page)`);
+        selected = allMessages.slice(0, limit);
     }
     // Re-group by sessionId
     const groupMap = new Map();

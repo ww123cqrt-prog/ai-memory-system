@@ -149,6 +149,15 @@ export declare class TdaiCore {
      *                    already evicted or never produced a capture.
      */
     handleSessionEnd(sessionKey: string): Promise<void>;
+    /**
+     * Trigger L1/L2/L3 processing for a session whose L0 rows already exist.
+     *
+     * This is used by scheduler/backfill jobs that ingest raw conversations
+     * directly into the L0 store. It deliberately does not call auto-capture and
+     * does not write marker messages; the L1 runner reads persisted L0 rows using
+     * its normal checkpoint cursor.
+     */
+    processStoredL0Session(sessionKey: string): Promise<void>;
     /** Get the LLM runner factory (for creating host-neutral LLM runners). */
     getLLMRunnerFactory(): LLMRunnerFactory;
     /** Get the shared VectorStore (may be undefined if init failed). */

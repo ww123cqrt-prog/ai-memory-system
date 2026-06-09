@@ -11,7 +11,8 @@
     "start:scheduler": "npx tsx scripts/start-scheduler.ts",
     "dev:bridge": "cd src/bridge && npm run dev",
     "dev:scheduler": "cd src/scheduler && npm run dev",
-    "init-history": "tsx scripts/init-history.ts"
+    "init-history": "tsx scripts/init-history.ts",
+    "memory:process-layers": "tsx scripts/process-memory-layers.ts"
   },
   "workspaces": [
     "src/bridge",
@@ -28,6 +29,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^25.9.1",
+    "tsx": "^4.22.4",
     "typescript": "^6.0.3"
   }
 }

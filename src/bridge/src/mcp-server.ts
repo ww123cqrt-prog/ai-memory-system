@@ -31,6 +31,7 @@ import {
 } from './mcp-memory-store.js';
 import { resolveEmbeddingConfig } from './embedding-services.js';
 import { MemBridgeHostAdapter } from './tdai-adapter.js';
+import { createTdaiConfig } from './tdai-config.js';
 
 // Import TdaiCore dynamically at runtime
 // This avoids TypeScript import issues with the vendor directory
@@ -40,69 +41,6 @@ const config = loadConfig();
 
 // Create host adapter
 const adapter = new MemBridgeHostAdapter({ config });
-
-function createTdaiConfig(embedding: typeof config.embedding) {
-  return {
-  storeBackend: 'sqlite',
-  recall: {
-    enabled: true,
-    strategy: 'hybrid',
-    maxResults: 5,
-    maxCharsPerMemory: 0,
-    maxTotalRecallChars: 0,
-    scoreThreshold: 0.3,
-    timeoutMs: 5000,
-  },
-  extraction: {
-    enabled: true,
-    maxMemoriesPerSession: 20,
-  },
-  persona: {
-    triggerEveryN: 50,
-    maxScenes: 20,
-    backupCount: 3,
-    sceneBackupCount: 10,
-  },
-  pipeline: {
-    everyNConversations: 5,
-    enableWarmup: true,
-    l1IdleTimeoutSeconds: 600,
-    l2DelayAfterL1Seconds: 90,
-    l2MinIntervalSeconds: 900,
-    l2MaxIntervalSeconds: 3600,
-    sessionActiveWindowHours: 24,
-  },
-  capture: {
-    l0l1RetentionDays: 0,
-  },
-  llm: {
-    enabled: true,
-    baseUrl: config.llm.baseUrl,
-    apiKey: config.llm.apiKey,
-    model: config.llm.model,
-    maxTokens: config.llm.maxTokens,
-    timeoutMs: config.llm.timeoutMs,
-  },
-  embedding: {
-    enabled: embedding.enabled,
-    provider: embedding.provider,
-    baseUrl: embedding.baseUrl,
-    apiKey: embedding.apiKey,
-    model: embedding.model,
-    dimensions: embedding.dimensions,
-    sendDimensions: embedding.sendDimensions,
-    conflictRecallTopK: embedding.conflictRecallTopK,
-    maxInputChars: embedding.maxInputChars,
-    timeoutMs: embedding.timeoutMs,
-  },
-  bm25: {
-    language: 'zh',
-  },
-  memoryCleanup: {},
-  report: {},
-  offload: {},
-  };
-}
 
 // TdaiCore instance (initialized lazily)
 let core: any = null;
@@ -130,7 +68,7 @@ async function ensureInitialized(): Promise<void> {
         
         core = new TdaiCore({
           hostAdapter: adapter,
-          config: createTdaiConfig(embedding),
+          config: createTdaiConfig(config, embedding),
         });
         
         await core.initialize();

@@ -22,6 +22,15 @@ const DEFAULT_CONFIG: LLMConfig = {
   retryDelayMs: 1000,
 };
 
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 /**
  * Single LLM call attempt (no retry logic)
  */
@@ -114,6 +123,10 @@ export async function callLLM(
     baseUrl: process.env.LLM_BASE_URL || DEFAULT_CONFIG.baseUrl,
     apiKey: process.env.LLM_API_KEY || DEFAULT_CONFIG.apiKey,
     model: process.env.LLM_MODEL || DEFAULT_CONFIG.model,
+    maxTokens: parsePositiveInteger(process.env.LLM_MAX_TOKENS, DEFAULT_CONFIG.maxTokens),
+    timeoutMs: parsePositiveInteger(process.env.LLM_TIMEOUT_MS, DEFAULT_CONFIG.timeoutMs),
+    maxRetries: parsePositiveInteger(process.env.LLM_MAX_RETRIES, DEFAULT_CONFIG.maxRetries),
+    retryDelayMs: parsePositiveInteger(process.env.LLM_RETRY_DELAY_MS, DEFAULT_CONFIG.retryDelayMs),
     ...config,
   };
 

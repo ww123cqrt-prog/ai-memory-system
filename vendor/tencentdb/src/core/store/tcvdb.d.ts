@@ -126,8 +126,8 @@ export declare class TcvdbMemoryStore implements IMemoryStore {
     deleteL0(recordId: string): Promise<boolean>;
     deleteL0Expired(cutoffIso: string): Promise<number>;
     countL0(): Promise<number>;
-    queryL0ForL1(sessionKey: string, afterRecordedAtMs?: number, limit?: number): Promise<L0QueryRow[]>;
-    queryL0GroupedBySessionId(sessionKey: string, afterRecordedAtMs?: number, limit?: number): Promise<L0SessionGroup[]>;
+    queryL0ForL1(sessionKey: string, afterRecordedAtMs?: number, limit?: number, afterRecordId?: string): Promise<L0QueryRow[]>;
+    queryL0GroupedBySessionId(sessionKey: string, afterRecordedAtMs?: number, limit?: number, afterRecordId?: string): Promise<L0SessionGroup[]>;
     getAllL0Texts(): Promise<Array<{
         record_id: string;
         message_text: string;

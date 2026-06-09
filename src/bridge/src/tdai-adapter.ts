@@ -36,6 +36,8 @@ export interface LLMRunParams {
 }
 
 export interface LLMRunner {
+  /** False when this runner is plain chat completion and cannot write local files. */
+  supportsFileTools?: boolean;
   run(params: LLMRunParams): Promise<string>;
 }
 
@@ -108,6 +110,7 @@ export class MemBridgeHostAdapter implements HostAdapter {
     return {
       createRunner(opts?: LLMRunnerCreateOptions): LLMRunner {
         return {
+          supportsFileTools: false,
           async run(params: LLMRunParams): Promise<string> {
             const model = opts?.modelRef || config.llm.model;
             
@@ -126,16 +129,25 @@ export class MemBridgeHostAdapter implements HostAdapter {
                   { role: 'user', content: params.prompt },
                 ],
                 max_tokens: params.maxTokens || config.llm.maxTokens,
+                temperature: 0.2,
               }),
               signal: params.timeoutMs ? AbortSignal.timeout(params.timeoutMs) : undefined,
             });
 
             if (!response.ok) {
-              throw new Error(`LLM API error: ${response.status} ${response.statusText}`);
+              const body = await response.text().catch(() => '');
+              const detail = body ? `: ${body.slice(0, 1000)}` : '';
+              throw new Error(`LLM API error: ${response.status} ${response.statusText}${detail}`);
             }
 
             const data = await response.json() as any;
-            return data.choices[0]?.message?.content || '';
+            const choice = data.choices?.[0];
+            const finishReason = choice?.finish_reason;
+            const content = choice?.message?.content || '';
+            if (finishReason && finishReason !== 'stop') {
+              logger.warn?.(`LLM call ${params.taskId} finished with reason=${finishReason}, outputChars=${content.length}`);
+            }
+            return content;
           },
         };
       },

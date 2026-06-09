@@ -9,7 +9,15 @@ import { existsSync } from 'node:fs';
 import type { ConversationSource, Session, Message } from '../src/sources/types.js';
 import { callLLM } from './llm-client.js';
 
-const MAX_CONTENT_CHARS = 100000; // ~25K tokens (rough estimate: 4 chars per token)
+function getMaxContentChars(): number {
+  const raw = process.env.DAILY_SUMMARY_MAX_CONTENT_CHARS;
+  if (!raw) {
+    return 100000; // ~25K tokens (rough estimate: 4 chars per token)
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 100000;
+}
 
 function truncateContent(content: string, maxChars: number): { content: string; truncated: boolean } {
   if (content.length <= maxChars) {
@@ -49,6 +57,10 @@ interface SessionWithMessages {
   source: string;
   session: Session;
   messages: Message[];
+}
+
+function isDialogMessage(message: Message): boolean {
+  return message.role === 'user' || message.role === 'assistant';
 }
 
 /**
@@ -116,12 +128,13 @@ export async function dailySummaryTask(options: DailySummaryOptions): Promise<st
   const formattedConversations = allSessions
     .map(({ source, session, messages }) => {
       const header = `## ${source} - ${session.title || session.id}`;
-      const body = messages.map(m => `[${m.role}] ${m.content}`).join('\n');
+      const body = messages.filter(isDialogMessage).map(m => `[${m.role}] ${m.content}`).join('\n');
       return `${header}\n${body}`;
     })
     .join('\n\n---\n\n');
 
-  const { content: truncatedContent, truncated } = truncateContent(formattedConversations, MAX_CONTENT_CHARS);
+  const maxContentChars = getMaxContentChars();
+  const { content: truncatedContent, truncated } = truncateContent(formattedConversations, maxContentChars);
 
   if (truncated) {
     console.warn(`[daily-summary] Content truncated from ${formattedConversations.length} to ${truncatedContent.length} chars`);
@@ -244,7 +257,7 @@ async function saveConversationsToMemory(sessions: SessionWithMessages[]): Promi
     let saved = 0;
     
     for (const { source, session, messages } of sessions) {
-      for (const msg of messages) {
+      for (const msg of messages.filter(isDialogMessage)) {
         const recordId = `l0:${source}:${session.id}:${msg.id}`;
         try {
           stmt.run(recordId, `${source}:${session.id}`, session.id, msg.role, msg.content, now, msg.timestamp.getTime());

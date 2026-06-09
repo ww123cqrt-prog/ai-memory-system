@@ -82,6 +82,8 @@ export declare class SceneExtractor {
      * so the LLM can immediately see how close it is to the limit.
      */
     private buildSceneSummaries;
+    private buildStructuredFallbackPrompt;
+    private applyStructuredFallbackOutput;
     /**
      * Update the scene navigation section at the end of persona.md.
      *

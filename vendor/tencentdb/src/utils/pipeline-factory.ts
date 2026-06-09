@@ -39,8 +39,28 @@ import { pullProfilesToLocal, syncLocalProfilesToStore } from "../core/profile/p
 
 const TAG = "[memory-tdai] [pipeline-factory]";
 
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+type ReindexOnInitMode = "background" | "sync" | "false";
+
+function readReindexOnInitMode(): ReindexOnInitMode {
+  const raw = process.env.MEMORY_REINDEX_ON_INIT?.trim().toLowerCase();
+  if (raw === "sync") return "sync";
+  if (raw === "false" || raw === "0" || raw === "off" || raw === "disabled") return "false";
+  return "background";
+}
+
 function supportsProfileSyncWrite(store?: IMemoryStore): boolean {
   return !!(store?.syncProfiles || store?.deleteProfiles);
+}
+
+function isCursorAfter(aMs: number, aId: string, bMs: number, bId: string): boolean {
+  return aMs > bMs || (aMs === bMs && aId > bId);
 }
 
 // ============================
@@ -189,7 +209,8 @@ async function _doInitStores(
     vectorStore = bundle.store;
     embeddingService = bundle.embedding ?? undefined;
 
-    const providerInfo = embeddingService?.getProviderInfo();
+    const reindexMode = readReindexOnInitMode();
+    const providerInfo = reindexMode === "false" ? undefined : embeddingService?.getProviderInfo();
     const initResult = await vectorStore.init(providerInfo);
 
     if (vectorStore.isDegraded()) {
@@ -232,6 +253,40 @@ async function _doInitStores(
       } catch (err) {
         logger.warn(`${TAG} Failed to read/write manifest (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
+
+      if (needsReindex) {
+        if (embeddingService) {
+          const runReindex = async () => {
+            logger.info(`${TAG} Reindexing vectors after embedding config change: ${reindexReason ?? "unknown reason"}`);
+            await vectorStore!.reindexAll(
+              (text) => embeddingService!.embed(text),
+              (done, total, layer) => {
+                if (done === total || done % 100 === 0) {
+                  logger.debug?.(`${TAG} Reindex progress ${layer}: ${done}/${total}`);
+                }
+              },
+            );
+          };
+
+          if (reindexMode === "sync") {
+            await runReindex();
+          } else if (reindexMode === "background") {
+            void runReindex().catch((err) => {
+              logger.warn(`${TAG} Background vector reindex failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          } else {
+            logger.warn(
+              `${TAG} Vector reindex required (${reindexReason ?? "unknown reason"}) ` +
+              `but MEMORY_REINDEX_ON_INIT=false`,
+            );
+          }
+        } else {
+          logger.warn(
+            `${TAG} Vector reindex required (${reindexReason ?? "unknown reason"}) ` +
+            `but no embedding service is available`,
+          );
+        }
+      }
     }
   } catch (err) {
     logger.warn(
@@ -243,7 +298,6 @@ async function _doInitStores(
 
   return { vectorStore, embeddingService, needsReindex, reindexReason };
 }
-
 // ============================
 // L1 Runner factory
 // ============================
@@ -273,6 +327,7 @@ export function createL1Runner(opts: {
 }): (params: { sessionKey: string }) => Promise<{ processedCount: number }> {
   const { pluginDataDir, cfg, openclawConfig, vectorStore, embeddingService, logger, getInstanceId, llmRunner } = opts;
   const config = openclawConfig as Record<string, unknown> | undefined;
+  const l1BatchLimit = readPositiveIntegerEnv("MEMORY_L1_BATCH_LIMIT", 2);
 
   return async ({ sessionKey }) => {
     if (!config && !llmRunner) {
@@ -285,18 +340,32 @@ export function createL1Runner(opts: {
     const runnerState = checkpoint.getRunnerState(cp, sessionKey);
 
     logger.info(
-      `${TAG} [l1] Session ${sessionKey}: l1_cursor=${runnerState.last_l1_cursor || "(start)"}`,
+      `${TAG} [l1] Session ${sessionKey}: ` +
+      `l1_cursor=${runnerState.last_l1_cursor || "(start)"}, ` +
+      `l1_record_id=${runnerState.last_l1_record_id || "(none)"}`,
     );
 
     try {
       let groups: Array<{ sessionId: string; messages: ConversationMessage[] }>;
       let maxRecordedAtMs = 0;
+      let maxRecordId = "";
+      const trackCursor = (recordedAtMs: number, recordId: string): void => {
+        if (recordedAtMs > 0 && isCursorAfter(recordedAtMs, recordId, maxRecordedAtMs, maxRecordId)) {
+          maxRecordedAtMs = recordedAtMs;
+          maxRecordId = recordId;
+        }
+      };
 
       if (vectorStore && !vectorStore.isDegraded()) {
         const l1Cursor = runnerState.last_l1_cursor > 0
           ? runnerState.last_l1_cursor
           : undefined;
-        const dbGroups = await vectorStore.queryL0GroupedBySessionId(sessionKey, l1Cursor);
+        const dbGroups = await vectorStore.queryL0GroupedBySessionId(
+          sessionKey,
+          l1Cursor,
+          l1BatchLimit,
+          runnerState.last_l1_record_id || "",
+        );
         groups = dbGroups.map((g) => ({
           sessionId: g.sessionId,
           messages: g.messages.map((m) => ({
@@ -309,7 +378,7 @@ export function createL1Runner(opts: {
         // Compute max recordedAtMs across all groups for cursor advancement
         for (const g of dbGroups) {
           for (const m of g.messages) {
-            if (m.recordedAtMs > maxRecordedAtMs) maxRecordedAtMs = m.recordedAtMs;
+            trackCursor(m.recordedAtMs, m.id);
           }
         }
         logger.debug?.(`${TAG} [l1] L0 data source: VectorStore DB`);
@@ -320,7 +389,8 @@ export function createL1Runner(opts: {
           pluginDataDir,
           runnerState.last_l1_cursor || undefined,
           logger,
-          50,
+          l1BatchLimit,
+          runnerState.last_l1_record_id || "",
         );
         groups = jsonlGroups.map((g) => ({
           sessionId: g.sessionId,
@@ -329,7 +399,7 @@ export function createL1Runner(opts: {
         // Compute max recordedAtMs from JSONL groups
         for (const g of jsonlGroups) {
           for (const m of g.messages) {
-            if (m.recordedAtMs > maxRecordedAtMs) maxRecordedAtMs = m.recordedAtMs;
+            trackCursor(m.recordedAtMs, m.id);
           }
         }
       }
@@ -374,6 +444,10 @@ export function createL1Runner(opts: {
           instanceId: getInstanceId?.(),
         });
 
+        if (!l1Result.success) {
+          throw new Error(`L1 extraction failed for session ${sessionKey}, sessionId=${group.sessionId || "(empty)"}`);
+        }
+
         totalExtracted += l1Result.extractedCount;
         totalStored += l1Result.storedCount;
         if (l1Result.lastSceneName) {
@@ -381,8 +455,15 @@ export function createL1Runner(opts: {
         }
       }
 
-      // Use maxRecordedAtMs (write time) as cursor — always positive, TCVDB-safe
-      await checkpoint.markL1ExtractionComplete(sessionKey, totalStored, maxRecordedAtMs || undefined, lastSceneName);
+      // Use the L0 write-time cursor plus record_id tie-breaker so paged
+      // backfills do not skip rows that share the same recorded_at timestamp.
+      await checkpoint.markL1ExtractionComplete(
+        sessionKey,
+        totalStored,
+        maxRecordedAtMs || undefined,
+        maxRecordedAtMs ? maxRecordId : undefined,
+        lastSceneName,
+      );
       logger.info(
         `${TAG} [l1] L1 complete: extracted=${totalExtracted}, stored=${totalStored} (${groups.length} group(s))`,
       );
@@ -532,7 +613,13 @@ export function createL2Runner(opts: {
     const preTotalProcessed = preState.total_processed;
 
     const extractResult = await extractor.extract(memories);
-    if (extractResult.success && extractResult.memoriesProcessed > 0) {
+    if (!extractResult.success) {
+      throw new Error(
+        `L2 scene extraction failed for session ${sessionKey}: ${extractResult.error ?? "unknown error"}`,
+      );
+    }
+
+    if (extractResult.memoriesProcessed > 0) {
       const checkpoint = new CheckpointManager(pluginDataDir, logger);
       const postState = await checkpoint.read();
       if (

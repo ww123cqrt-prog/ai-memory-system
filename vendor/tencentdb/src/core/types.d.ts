@@ -78,6 +78,12 @@ export interface LLMRunParams {
  */
 export interface LLMRunner {
     /**
+     * Whether the runner can execute local file tools for L2/L3 writes.
+     * Plain chat-completion runners should set this to false so core can use
+     * engineering-side filesystem fallbacks.
+     */
+    supportsFileTools?: boolean;
+    /**
      * Execute a prompt and return the LLM's text output.
      *
      * Behavior depends on the factory configuration:

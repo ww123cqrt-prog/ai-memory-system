@@ -35,6 +35,8 @@ export interface RunnerSessionState {
     last_captured_timestamp: number;
     /** L0 JSONL cursor: epoch ms of last message processed by L1 */
     last_l1_cursor: number;
+    /** Tie-breaker for L1 cursor when multiple L0 rows share the same recorded_at. */
+    last_l1_record_id: string;
     /** Last scene name from the most recent L1 extraction (for cross-batch continuity) */
     last_scene_name: string;
 }
@@ -148,7 +150,7 @@ export declare class CheckpointManager {
      * @param cursorRecordedAtMs - The max recorded_at epoch ms of processed L0 messages.
      *   This becomes the new `last_l1_cursor` value (recorded_at semantics, not conversation timestamp).
      */
-    markL1ExtractionComplete(sessionKey: string, memoriesExtracted: number, cursorRecordedAtMs?: number, lastSceneName?: string): Promise<void>;
+    markL1ExtractionComplete(sessionKey: string, memoriesExtracted: number, cursorRecordedAtMs?: number, cursorRecordId?: string, lastSceneName?: string): Promise<void>;
     /**
      * Atomically read the per-session cursor, execute the capture callback,
      * and advance the cursor — all within a single file-lock critical section.

@@ -16,6 +16,13 @@
       "description": "每周五检查相关项目（暂未实现）",
       "retryOnFail": false,
       "maxRetries": 0
+    },
+    "layered-memory-backfill": {
+      "cron": "30 3 * * *",
+      "enabled": false,
+      "description": "手动/一次性补跑历史 L0 到 L1/L2/L3",
+      "retryOnFail": false,
+      "maxRetries": 0
     }
   }
 }
