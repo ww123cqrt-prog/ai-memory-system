@@ -8,3 +8,6 @@ dist/
 **/.memory-tdai/
 *.db
 .env.local
+
+# Local agent/client config
+opencode.json
