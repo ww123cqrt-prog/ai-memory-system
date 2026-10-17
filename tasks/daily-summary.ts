@@ -8,6 +8,8 @@ import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import type { ConversationSource, Session, Message } from '../src/sources/types.js';
 import { callLLM } from './llm-client.js';
+import { loadConfig } from '../src/bridge/src/config.js';
+import { indexL0Row } from '../src/bridge/src/l0-fts.js';
 
 function getMaxContentChars(): number {
   const raw = process.env.DAILY_SUMMARY_MAX_CONTENT_CHARS;
@@ -214,11 +216,12 @@ ${conversations}
 let _db: InstanceType<typeof DatabaseSync> | null = null;
 function getDb() {
   if (_db) return _db;
-  const dbPath = join(homedir(), '.memory-tdai', 'vectors.db');
+  const dbPath = join(loadConfig().dataDir, 'vectors.db');
   if (!existsSync(dbPath)) {
     throw new Error(`Memory database not found: ${dbPath}`);
   }
   _db = new DatabaseSync(dbPath);
+  _db.exec('PRAGMA busy_timeout=5000');
   return _db;
 }
 
@@ -233,17 +236,20 @@ async function saveSummaryToMemory(summary: string, date: Date): Promise<void> {
   const recordId = `daily-summary:${dateStr}`;
   const now = new Date().toISOString();
 
-  db.prepare(`
-    INSERT OR REPLACE INTO l0_conversations 
-    (record_id, session_key, session_id, role, message_text, recorded_at, timestamp)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(recordId, 'daily-summary:default', 'scheduler', 'assistant', content, now, date.getTime());
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare(`INSERT OR REPLACE INTO l0_conversations
+      (record_id, session_key, session_id, role, message_text, recorded_at, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(recordId, 'daily-summary:default', 'scheduler', 'assistant', content, now, date.getTime());
+    indexL0Row(db, { record_id: recordId, session_key: 'daily-summary:default', session_id: 'scheduler',
+      role: 'assistant', message_text: content, recorded_at: now, timestamp: date.getTime() });
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
 
   console.log(`[daily-summary] Saved summary to memory: ${recordId}`);
 }
 
-async function saveConversationsToMemory(sessions: SessionWithMessages[]): Promise<void> {
-  const db = getDb();
+export async function saveConversationsToMemory(sessions: SessionWithMessages[], db = getDb()): Promise<void> {
   db.exec('BEGIN TRANSACTION');
   
   try {
@@ -260,13 +266,17 @@ async function saveConversationsToMemory(sessions: SessionWithMessages[]): Promi
       for (const msg of messages.filter(isDialogMessage)) {
         const recordId = `l0:${source}:${session.id}:${msg.id}`;
         try {
-          stmt.run(recordId, `${source}:${session.id}`, session.id, msg.role, msg.content, now, msg.timestamp.getTime());
-          saved++;
+          const result = stmt.run(recordId, `${source}:${session.id}`, session.id, msg.role, msg.content, now, msg.timestamp.getTime());
+          if (Number(result.changes) > 0) {
+            indexL0Row(db, { record_id: recordId, session_key: `${source}:${session.id}`, session_id: session.id,
+              role: msg.role, message_text: msg.content, recorded_at: now, timestamp: msg.timestamp.getTime() });
+            saved++;
+          }
         } catch (error) {
           if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
             // Duplicate, skip silently
           } else {
-            console.warn(`[daily-summary] Failed to save message ${recordId}:`, error);
+            throw error;
           }
         }
       }

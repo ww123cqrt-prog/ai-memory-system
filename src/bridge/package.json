@@ -6,13 +6,15 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "test": "npm run test:config && npm run test:mcp-memory-store && npm run test:tdai-adapter && npm run test:embedding-services",
+    "test": "npm run test:config && npm run test:mcp-memory-store && npm run test:tdai-adapter && npm run test:embedding-services && npm run test:sqlite-reader",
     "test:config": "node --import tsx test/config.test.ts",
     "test:mcp-memory-store": "node --import tsx test/mcp-memory-store.test.ts",
     "start": "node dist/mcp-server.js",
     "dev": "tsx src/mcp-server.ts",
     "test:tdai-adapter": "node --import tsx test/tdai-adapter.test.ts",
-    "test:embedding-services": "node --import tsx test/embedding-services.test.ts"
+    "test:embedding-services": "node --import tsx test/embedding-services.test.ts",
+    "test:sqlite-reader": "node --import tsx --test test/mcp-sqlite-reader.test.ts test/memory-entities.test.ts",
+    "test:protocol": "node --import tsx --test test/mcp-server.integration.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

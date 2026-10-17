@@ -1,3 +1,6 @@
+import { buildFtsQuery } from './core-fts.js';
+import type { McpSqliteReader } from './mcp-sqlite-reader.js';
+
 export type MemoryLayer = 'l0' | 'l1';
 
 export interface McpMemory {
@@ -32,7 +35,7 @@ export interface MemoryPage {
   };
 }
 
-interface L1RecordRow {
+export interface L1RecordRow {
   record_id: string;
   content: string;
   type?: string;
@@ -48,7 +51,7 @@ interface L1RecordRow {
   metadata_json?: string;
 }
 
-interface L0RecordRow {
+export interface L0RecordRow {
   record_id: string;
   session_key: string;
   session_id?: string;
@@ -72,7 +75,15 @@ interface MemoryStore {
   isFtsAvailable?: () => boolean;
 }
 
-const MAX_L0_SCAN_ROWS = 1000;
+export interface MemoryScope { userId?: string; agentId?: string; }
+
+export function matchesScope(sessionKey: string, scope: MemoryScope): boolean {
+  const split = sessionKey.indexOf(':');
+  const user = split < 0 ? sessionKey : sessionKey.slice(0, split);
+  const agent = split < 0 ? '' : sessionKey.slice(split + 1);
+  return (scope.userId === undefined || user === scope.userId) &&
+    (scope.agentId === undefined || agent === scope.agentId);
+}
 
 interface L0SearchResult extends L0RecordRow {
   score: number;
@@ -107,7 +118,7 @@ function normalizeTimestamp(value: string | undefined, fallback?: number): strin
   return '';
 }
 
-function toL1Memory(record: L1RecordRow): McpMemory {
+export function toL1Memory(record: L1RecordRow): McpMemory {
   return {
     id: record.record_id,
     layer: 'l1',
@@ -123,7 +134,7 @@ function toL1Memory(record: L1RecordRow): McpMemory {
   };
 }
 
-function toL0Memory(record: L0RecordRow): McpMemory {
+export function toL0Memory(record: L0RecordRow): McpMemory {
   const recordedAt = normalizeTimestamp(record.recorded_at, record.timestamp);
   return {
     id: record.record_id,
@@ -146,28 +157,20 @@ function newestFirst(a: McpMemory, b: McpMemory): number {
   return Date.parse(b.updated_at || b.created_at || '') - Date.parse(a.updated_at || a.created_at || '');
 }
 
-function buildSimpleFtsQuery(query: string): string {
-  return query
-    .trim()
-    .split(/\s+/)
-    .map((term) => term.replace(/["*]/g, ''))
-    .filter(Boolean)
-    .map((term) => `"${term}"`)
-    .join(' OR ');
-}
-
 async function listAllL0Records(store: MemoryStore): Promise<L0RecordRow[]> {
   if (store.queryL0RecordsCursor) {
     const records: L0RecordRow[] = [];
     let afterId = '';
 
-    while (records.length < MAX_L0_SCAN_ROWS) {
-      const page = await store.queryL0RecordsCursor(afterId, Math.min(200, MAX_L0_SCAN_ROWS - records.length));
+    while (true) {
+      const page = await store.queryL0RecordsCursor(afterId, 200);
       if (page.length === 0) {
         break;
       }
       records.push(...page);
-      afterId = page[page.length - 1].record_id;
+      const next = page[page.length - 1].record_id;
+      if (next <= afterId) throw new Error('Memory cursor did not advance');
+      afterId = next;
     }
 
     return records;
@@ -178,10 +181,13 @@ async function listAllL0Records(store: MemoryStore): Promise<L0RecordRow[]> {
 
 export async function listMemories(
   store: MemoryStore,
-  opts: { page: number; pageSize: number },
+  opts: { page: number; pageSize: number } & MemoryScope,
+  reader?: McpSqliteReader,
 ): Promise<MemoryPage> {
-  const l1Memories = (await store.queryL1Records()).map(toL1Memory);
-  const l0Memories = (await listAllL0Records(store)).map(toL0Memory);
+  if (reader) return reader.list(opts);
+  if (!Number.isSafeInteger(opts.page) || opts.page < 1 || !Number.isSafeInteger(opts.pageSize) || opts.pageSize < 1) throw new Error('Invalid pagination');
+  const l1Memories = (await store.queryL1Records()).map(toL1Memory).filter(r => matchesScope(r.session_key, opts));
+  const l0Memories = (await listAllL0Records(store)).map(toL0Memory).filter(r => matchesScope(r.session_key, opts));
   const allMemories = [...l1Memories, ...l0Memories].sort(newestFirst);
   const total = allMemories.length;
   const totalPages = Math.ceil(total / opts.pageSize);
@@ -196,17 +202,18 @@ export async function listMemories(
     total_pages: totalPages,
     has_more: opts.page < totalPages,
     l0: {
-      memories: l0Memories.sort(newestFirst).slice(offset, offset + opts.pageSize),
+      memories: memories.filter(r => r.layer === 'l0'),
       total: l0Memories.length,
     },
     l1: {
-      memories: l1Memories.sort(newestFirst).slice(offset, offset + opts.pageSize),
+      memories: memories.filter(r => r.layer === 'l1'),
       total: l1Memories.length,
     },
   };
 }
 
-export async function findMemoryById(store: MemoryStore, memoryId: string): Promise<McpMemory | null> {
+export async function findMemoryById(store: MemoryStore, memoryId: string, reader?: McpSqliteReader): Promise<McpMemory | null> {
+  if (reader) return reader.find(memoryId);
   const l1Records = await store.queryL1Records();
   const l1Record = l1Records.find((record) => record.record_id === memoryId);
   if (l1Record) {
@@ -215,10 +222,9 @@ export async function findMemoryById(store: MemoryStore, memoryId: string): Prom
 
   if (store.queryL0RecordsCursor) {
     let afterId = '';
-    let scanned = 0;
 
-    while (scanned < MAX_L0_SCAN_ROWS) {
-      const page = await store.queryL0RecordsCursor(afterId, Math.min(200, MAX_L0_SCAN_ROWS - scanned));
+    while (true) {
+      const page = await store.queryL0RecordsCursor(afterId, 200);
       if (page.length === 0) {
         break;
       }
@@ -226,8 +232,9 @@ export async function findMemoryById(store: MemoryStore, memoryId: string): Prom
       if (l0Record) {
         return toL0Memory(l0Record);
       }
-      scanned += page.length;
-      afterId = page[page.length - 1].record_id;
+      const next = page[page.length - 1].record_id;
+      if (next <= afterId) throw new Error('Memory cursor did not advance');
+      afterId = next;
     }
   }
 
@@ -239,7 +246,9 @@ export async function findNewestL0RecordForTurn(
   sessionKey: string,
   text: string,
   sessionId?: string,
+  reader?: McpSqliteReader,
 ): Promise<McpMemory | null> {
+  if (reader) return reader.newest(sessionKey, text, sessionId);
   if (!store.queryL0ForL1) {
     return null;
   }
@@ -257,8 +266,9 @@ export async function findNewestL0RecordForTurn(
 export async function deleteMemoryById(
   store: MemoryStore,
   memoryId: string,
+  reader?: McpSqliteReader,
 ): Promise<{ success: boolean; id: string; layer?: MemoryLayer }> {
-  const existing = await findMemoryById(store, memoryId);
+  const existing = await findMemoryById(store, memoryId, reader);
   const requestedLayer = memoryId.startsWith('l0_') || memoryId.startsWith('l0:') ? 'l0' : undefined;
 
   if (!existing) {
@@ -278,13 +288,15 @@ export async function deleteMemoryById(
 
 export async function searchConversationMemories(
   store: MemoryStore,
-  opts: { query: string; limit: number; sessionKey?: string },
+  opts: { query: string; limit: number; sessionKey?: string } & MemoryScope,
+  reader?: McpSqliteReader,
 ): Promise<MemorySearchPage> {
+  if (reader) return reader.searchL0(opts.query, opts.limit, opts);
   if (!store.searchL0Fts || store.isFtsAvailable?.() === false) {
     return { results: [], total: 0, strategy: 'none' };
   }
 
-  const ftsQuery = buildSimpleFtsQuery(opts.query);
+  const ftsQuery = buildFtsQuery(opts.query);
   if (!ftsQuery) {
     return { results: [], total: 0, strategy: 'none' };
   }

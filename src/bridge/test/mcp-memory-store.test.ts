@@ -126,3 +126,21 @@ function createStore() {
   assert.equal(result.results[0].content, 'remember this exact note');
   assert.equal(result.strategy, 'fts');
 }
+
+// Regression: records beyond the former 1,000-row cap must remain reachable.
+{
+  const rows = Array.from({ length: 1205 }, (_, i) => ({
+    ...l0Rows[0], record_id: `l0_${String(i).padStart(6, '0')}`,
+    session_key: i === 1204 ? 'other:agent' : 'user:agent',
+    recorded_at: new Date(Date.UTC(2026, 5, 1) + i * 1000).toISOString(),
+  }));
+  const store = { ...createStore(), queryL0RecordsCursor: (after: string, size: number) =>
+    rows.filter(r => r.record_id > after).slice(0, size) };
+  const page = await listMemories(store, { page: 121, pageSize: 10 });
+  assert.equal(page.total, 1205);
+  assert.equal(page.memories.length, 5);
+  assert.equal((await findMemoryById(store, rows[1204].record_id))?.id, rows[1204].record_id);
+  const scoped = await listMemories(store, { page: 1, pageSize: 10, userId: 'missing' });
+  assert.equal(scoped.total, 0);
+}
+console.log('mcp-memory-store regressions passed');

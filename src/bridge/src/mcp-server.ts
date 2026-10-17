@@ -21,6 +21,11 @@ import {
   ListResourcesRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { DatabaseSync } from 'node:sqlite';
+import { join } from 'node:path';
+import { McpSqliteReader } from './mcp-sqlite-reader.js';
+import { repairL0Fts } from './l0-fts.js';
+import { listEntities, entityMatches } from './memory-entities.js';
 import { loadConfig } from './config.js';
 import {
   deleteMemoryById,
@@ -44,6 +49,7 @@ const adapter = new MemBridgeHostAdapter({ config });
 
 // TdaiCore instance (initialized lazily)
 let core: any = null;
+let reader: McpSqliteReader | undefined;
 
 // Memory store for tracking entities - derived from TdaiCore database queries
 // const entities = new Map<string, { type: string; id: string; created: number }>();
@@ -72,9 +78,20 @@ async function ensureInitialized(): Promise<void> {
         });
         
         await core.initialize();
+        const path = join(config.dataDir, 'vectors.db');
+        const indexDb = new DatabaseSync(path);
+        try {
+          indexDb.exec('PRAGMA busy_timeout=5000');
+          const fixed = repairL0Fts(indexDb);
+          if (fixed.inserted) console.error(`[Bridge] Indexed ${fixed.inserted} missing L0 records`);
+        } finally { indexDb.close(); }
+        reader = new McpSqliteReader(path);
         console.error('[Bridge] TdaiCore initialized');
       } catch (err) {
         console.error('[Bridge] Failed to initialize TdaiCore:', err);
+        reader?.close();
+        reader = undefined;
+        if (core) { await core.destroy(); core = null; }
         initPromise = null;
         throw err;
       }
@@ -122,8 +139,8 @@ server.tool(
   'Save text or conversation history for a user/agent',
   {
     text: z.string().describe('The text content to save as a memory'),
-    user_id: z.string().optional().describe('User identifier'),
-    agent_id: z.string().optional().describe('Agent identifier'),
+    user_id: z.string().min(1).optional().describe('User identifier'),
+    agent_id: z.string().min(1).optional().describe('Agent identifier'),
     metadata: z.record(z.any()).optional().describe('Additional metadata'),
   },
   wrapHandler(async ({ text, user_id, agent_id, metadata }) => {
@@ -151,14 +168,14 @@ server.tool(
 
     const store = core.getVectorStore();
     const captured = store
-      ? await findNewestL0RecordForTurn(store, sessionKey, text, sessionId)
+      ? await findNewestL0RecordForTurn(store, sessionKey, text, sessionId, reader)
       : null;
     
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
-          success: true,
+          success: Boolean(captured && result.l0RecordedCount > 0),
           id: captured?.id,
           layer: captured?.layer || 'l0',
           memory: captured,
@@ -176,33 +193,33 @@ server.tool(
   'Semantic search across memories with filters',
   {
     query: z.string().describe('Search query'),
-    user_id: z.string().optional(),
-    agent_id: z.string().optional(),
-    limit: z.number().optional().default(5),
+    user_id: z.string().min(1).optional(),
+    agent_id: z.string().min(1).optional(),
+    limit: z.number().int().min(1).max(100).optional().default(5),
     filters: z.record(z.any()).optional(),
   },
   wrapHandler(async ({ query, user_id, agent_id, limit, filters }) => {
     await ensureInitialized();
     const store = core.getVectorStore();
     
-    // Call TdaiCore.searchMemories()
-    const result = await core.searchMemories({
-      query,
-      limit,
-      type: filters?.type,
-      scene: filters?.scene,
-    });
-    const sessionKey = user_id || agent_id ? `${user_id || 'default'}:${agent_id || 'default'}` : undefined;
-    const l0Result = store
-      ? await searchConversationMemories(store, { query, limit, sessionKey })
+    const scope = { userId: user_id, agentId: agent_id };
+    const scoped = user_id !== undefined || agent_id !== undefined;
+    const scopedL1 = scoped ? reader!.searchL1(query, limit, scope, filters) : undefined;
+    // The core's L1 search has no scope parameter. Use SQL FTS for scoped queries.
+    const result = scopedL1 ? {
+      text: scopedL1.results.map(r => `[${r.type}] ${r.content}`).join('\n'),
+      total: scopedL1.total, strategy: scopedL1.strategy,
+    } : await core.searchMemories({ query, limit, type: filters?.type, scene: filters?.scene });
+    const l0Result = store && (!filters?.type || filters.type === 'conversation') && !filters?.scene
+      ? await searchConversationMemories(store, { query, limit, ...scope }, reader)
       : { results: [], total: 0, strategy: 'none' };
-    
+
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
           results: result.text,
-          memories: l0Result.results,
+          memories: [...(scopedL1?.results || []), ...l0Result.results],
           total: result.total + l0Result.total,
           strategy: l0Result.total > 0 ? `${result.strategy}+l0-${l0Result.strategy}` : result.strategy,
           l1: {
@@ -222,10 +239,10 @@ server.tool(
   'get_memories',
   'List memories with filters and pagination',
   {
-    user_id: z.string().optional(),
-    agent_id: z.string().optional(),
-    page: z.number().optional().default(1),
-    page_size: z.number().optional().default(20),
+    user_id: z.string().min(1).optional(),
+    agent_id: z.string().min(1).optional(),
+    page: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional().default(1),
+    page_size: z.number().int().min(1).max(1000).optional().default(20),
   },
   wrapHandler(async ({ user_id, agent_id, page, page_size }) => {
     await ensureInitialized();
@@ -235,7 +252,7 @@ server.tool(
       throw new Error('Vector store not available');
     }
     
-    const pageResult = await listMemories(store, { page, pageSize: page_size });
+    const pageResult = await listMemories(store, { page, pageSize: page_size, userId: user_id, agentId: agent_id }, reader);
     
     return {
       content: [{
@@ -261,7 +278,7 @@ server.tool(
       throw new Error('Vector store not available');
     }
 
-    const record = await findMemoryById(store, memory_id);
+    const record = await findMemoryById(store, memory_id, reader);
 
     if (!record) {
       return {
@@ -290,7 +307,7 @@ server.tool(
 // Tool 5: update_memory
 server.tool(
   'update_memory',
-  'Overwrite a memory\'s text by ID',
+  'Overwrite an L1 extracted memory\'s text and metadata by ID',
   {
     memory_id: z.string().describe('Memory ID to update'),
     text: z.string().describe('New text content'),
@@ -313,7 +330,9 @@ server.tool(
           type: 'text',
           text: JSON.stringify({
             success: false,
-            error: `Memory not found: ${memory_id}`,
+            error: reader?.find(memory_id)?.layer === 'l0'
+              ? 'L0 conversation updates are not supported; update_memory updates L1 records'
+              : `Memory not found: ${memory_id}`,
           }),
         }],
       };
@@ -327,7 +346,7 @@ server.tool(
       priority: existing.priority,
       scene_name: existing.scene_name,
       source_message_ids: [],
-      metadata: existing.metadata_json ? JSON.parse(existing.metadata_json) : {},
+      metadata: { ...(reader?.find(memory_id)?.metadata || {}), ...metadata },
       timestamps: [existing.timestamp_start, existing.timestamp_end].filter(Boolean),
       createdAt: existing.created_time,
       updatedAt: now,
@@ -375,7 +394,7 @@ server.tool(
       throw new Error('Vector store not available');
     }
 
-    const result = await deleteMemoryById(store, memory_id);
+    const result = await deleteMemoryById(store, memory_id, reader);
 
     return {
       content: [{
@@ -393,8 +412,8 @@ server.tool(
   'delete_all_memories',
   'Bulk delete all memories in scope',
   {
-    user_id: z.string().optional(),
-    agent_id: z.string().optional(),
+    user_id: z.string().min(1).optional(),
+    agent_id: z.string().min(1).optional(),
   },
   async ({ user_id, agent_id }) => {
     return {
@@ -415,7 +434,7 @@ server.tool(
   'Delete a user/agent/app/run entity and its memories',
   {
     entity_type: z.enum(['user', 'agent', 'app', 'run']).describe('Type of entity'),
-    entity_id: z.string().describe('Entity ID to delete'),
+    entity_id: z.string().min(1).describe('Entity ID to delete'),
   },
   wrapHandler(async ({ entity_type, entity_id }) => {
     await ensureInitialized();
@@ -425,11 +444,9 @@ server.tool(
       throw new Error('Vector store not available');
     }
     
-    const page = await listMemories(store, { page: 1, pageSize: 1000 });
-    const toDelete = page.memories.filter((r: any) => 
-      r.session_id === entity_id || r.session_key?.startsWith(`${entity_id}:`)
-    );
-    
+    if (entity_type === 'app') throw new Error('App entities are not stored by this bridge');
+    const toDelete = reader!.entityRecords().filter(r => entityMatches(r, entity_type, entity_id));
+
     if (toDelete.length === 0) {
       return {
         content: [{
@@ -444,7 +461,7 @@ server.tool(
     
     let deleted = 0;
     for (const record of toDelete) {
-      const result = await deleteMemoryById(store, record.id);
+      const result = await deleteMemoryById(store, record.id, reader);
       if (result.success) {
         deleted++;
       }
@@ -454,7 +471,8 @@ server.tool(
       content: [{
         type: 'text',
         text: JSON.stringify({
-          success: true,
+          success: deleted === toDelete.length,
+          matched: toDelete.length,
           entity_type,
           entity_id,
           deleted,
@@ -479,31 +497,14 @@ server.tool(
       throw new Error('Vector store not available');
     }
     
-    const page = await listMemories(store, { page: 1, pageSize: 1000 });
-    const entities = new Map();
-    
-    for (const record of page.memories) {
-      const [userId, agentId] = record.session_key.split(':');
-      const recordType = userId ? 'user' : 'agent';
-      if (entity_type && recordType !== entity_type) continue;
+    const entities = listEntities(reader!.entityRecords(), entity_type);
 
-      const entityId = userId || agentId || record.session_id || 'unknown';
-      const key = `${recordType}:${entityId}`;
-      if (!entities.has(key)) {
-        entities.set(key, {
-          type: recordType,
-          id: entityId,
-          created: record.created_at || Date.now(),
-        });
-      }
-    }
-    
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
-          entities: Array.from(entities.values()),
-          total: entities.size,
+          entities,
+          total: entities.length,
         }),
       }],
     };
@@ -520,6 +521,7 @@ async function main() {
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.error('[Bridge] Shutting down...');
+  reader?.close();
   if (core) {
     await core.destroy();
   }
@@ -528,6 +530,7 @@ process.on('SIGINT', async () => {
 
 process.on('SIGTERM', async () => {
   console.error('[Bridge] Shutting down...');
+  reader?.close();
   if (core) {
     await core.destroy();
   }
